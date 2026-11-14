@@ -52,7 +52,7 @@ export class Gateway {
         this.cfg = next;
         stamp = sourcesStamp(next.sources);
         this.reloadError = null;
-        console.log(`config: reloaded ${this.cfg.path} (${Object.keys(next.models).length} models, ${next.agents.length} agents${next.omp ? `, omp import from ${next.omp.dir}` : ""})`);
+        console.log(`config: reloaded ${this.cfg.path} (${Object.keys(next.models).length} models of ours, ${next.agents.length} agents${next.omp ? `, omp-native: ${next.ompProviders.length} omp providers via SDK ${next.ompRuntime?.version}` : ""})`);
         for (const w of next.warnings) console.log(`config: warning: ${w}`);
       } catch (e) {
         this.reloadError = (e as Error).message;
@@ -326,7 +326,7 @@ export async function main(configPath?: string) {
   gw.watch();
   const server = await gw.listen();
   for (const w of cfg.warnings) console.log(`config: warning: ${w}`);
-  console.log(`subagent-models gateway listening on ${cfg.gateway.socket} (config ${cfg.path}; models: ${Object.keys(cfg.models).join(", ")})`);
+  console.log(`subagent-models gateway listening on ${cfg.gateway.socket} (config ${cfg.path}; models of ours: ${Object.keys(cfg.models).join(", ") || "none"}${cfg.omp ? `; omp-native: ${cfg.ompProviders.length} omp providers via SDK ${cfg.ompRuntime?.version}` : ""})`);
   const stop = () => { console.log("stopping"); gw.stop(); server.stop(true); unlink(cfg.gateway.socket).catch(() => {}).finally(() => process.exit(0)); };
   process.on("SIGTERM", stop);
   process.on("SIGINT", stop);
