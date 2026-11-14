@@ -1,0 +1,125 @@
+# subagent-models: native Claude Code subagents on non-Claude models.
+#
+# Lives at ~/.config/subagent-models/config.yml (or $SUBAGENT_MODELS_CONFIG).
+# The gateway and the Claude Code mod both re-read it within a few seconds of a
+# save; a broken edit is reported (journalctl --user -u subagent-models) and the
+# previous config stays in force. Check an edit with:
+#   bun ~/projects/exa/subagent-models/gateway/src/cli.ts check
+#
+# Model ids. Every model below is reachable as <provider>/<model key>, e.g.
+# refuseless/deepseek-v4.1-flash-fast. That id is what an agent's `model:` names,
+# and what Claude Code sends; the mod routes requests for these ids to the gateway
+# and leaves every other request alone. A level suffix (:off :minimal :low :medium
+# :high :xhigh :max) picks the reasoning level where a model is named in an agent
+# or a fallback chain.
+
+gateway:
+  # Unix socket, owner-only. Default: $XDG_RUNTIME_DIR/subagent-models/gateway.sock
+  # socket: ${XDG_RUNTIME_DIR}/subagent-models/gateway.sock
+  accessLog: ~/.local/state/subagent-models/access.jsonl
+  # Write each translated upstream request body here (debugging; holds conversation text).
+  # captureDir: ~/.local/state/subagent-models/capture
+  # Seconds between SSE pings while the upstream is quiet (keeps Claude Code's stall watchdog calm).
+  pingIntervalSeconds: 15
+
+secrets:
+  # For apiKey values that are op:// references: the service-account token file
+  # handed to `op read` as OP_SERVICE_ACCOUNT_TOKEN.
+  opServiceAccountTokenFile: ~/.config/op/token
+  # Keys stay in the gateway's memory this long, then are fetched again (a 401 refetches at once).
+  keyCacheSeconds: 3600
+
+# Defaults for every model; a provider or a model can override them under `timeouts:`.
+timeouts:
+  # The upstream must produce its first event within this long, or the attempt fails
+  # (and is retried / the chain walks on). omp uses 10s; reasoning models on long
+  # prompts can need more.
+  streamFirstEventTimeoutSeconds: 30
+  # Once streaming, silence this long fails the response (see README: mid-stream stalls).
+  streamIdleTimeoutSeconds: 90
+  # Whole request, first attempt to last; 0 = no limit.
+  totalTimeoutSeconds: 0
+
+retry:
+  # Retries of the same model (connection error, 5xx, timeout) before walking the chain.
+  maxRetries: 2
+  baseDelayMs: 500
+  maxDelayMs: 20000
+  # true: a 429 walks the chain at once; false: it is retried like a 5xx first.
+  rateLimitWalksChain: true
+  # A model the chain walked away from is skipped this long (a 429's retry-after wins).
+  cooldownSeconds: 300
+  # false: a 400/422 (the request itself was refused) is returned, not walked past.
+  walkOnClientErrors: false
+  # Model id -> ordered fallbacks. An entry is <provider>/<model>[:level], or
+  # anthropic/<claude-model>[:level] for a real Claude model, which the mod serves
+  # with the Claude Code session's own login (the gateway never holds a Claude key).
+  # A model with no entry here has no fallback: its failure is the agent's error.
+  fallbackChains:
+    refuseless/deepseek-v4.1-flash-fast:
+      - refuseless/glm-5.3-flash-abliterated:high
+      - anthropic/claude-sonnet-5-5:medium
+
+providers:
+  refuseless:
+    # openai-completions (POST {baseUrl}/chat/completions) or
+    # anthropic-messages (POST {baseUrl}/v1/messages).
+    api: openai-completions
+    baseUrl: https://api.refuseless.com/v1
+    # Key source, one of:
+    #   op://Vault/item/field      read with `op read` (see secrets.opServiceAccountTokenFile)
+    #   "!shell command"           its trimmed stdout (as omp's models.yml does)
+    #   ENV_VAR_NAME               an environment variable of the gateway
+    # Never a literal key.
+    apiKey: op://Agents/refuseless_api_key/credential
+    # headers: { x-extra: value }
+    # Compat knobs for every model of this provider (a model's own compat wins).
+    compat:
+      # Refuseless takes reasoning_effort off|low|high|max only; anything else is a 400.
+      reasoningEffortMap: { off: "off", minimal: low, low: low, medium: high, high: high, xhigh: max, max: max }
+      maxTokensField: max_tokens
+      reasoningContentField: reasoning_content
+      # DeepSeek wants the reasoning of a tool-calling turn sent back with it.
+      replayReasoning: tool-calls
+      supportsMultipleSystemMessages: false
+    models:
+      deepseek-v4.1-flash-fast:
+        name: DeepSeek V4.1 Flash Fast
+        reasoning: true
+        input: [text, image]
+        contextWindow: 1048576
+        maxTokens: 262144
+        defaultLevel: high
+      glm-5.3-flash-abliterated:
+        name: GLM 5.3 Flash Abliterated
+        reasoning: true
+        input: [text, image]
+        contextWindow: 1048576
+        maxTokens: 131072
+        defaultLevel: high
+
+  # An Anthropic-compatible provider looks like this:
+  # someprovider:
+  #   api: anthropic-messages
+  #   baseUrl: https://api.example.com/anthropic      # gateway posts to {baseUrl}/v1/messages
+  #   apiKey: SOMEPROVIDER_API_KEY
+  #   compat:
+  #     authHeader: x-api-key        # or bearer
+  #     thinkingMode: budget         # budget | adaptive | none
+  #     thinkingBudgets: { low: 4096, medium: 8192, high: 16384, xhigh: 32768, max: 63999 }
+  #     stripCacheControl: false
+  #   models:
+  #     some-model: { name: Some Model, contextWindow: 262144, maxTokens: 65536, input: [text] }
+
+# Agent types the mod registers, each listed as subagent-models:<name> for the Agent tool.
+# Fields other than model/description/prompt/effort are passed to Claude Code's agent
+# definition as written: tools, disallowedTools, maxTurns, skills, mcpServers,
+# permissionMode, memory, initialPrompt, autoCompactWindow, ...
+# Left out: tools = every tool, prompt = the general-purpose agent's.
+agents:
+  deepseek:
+    model: refuseless/deepseek-v4.1-flash-fast:high
+    description: >-
+      General-purpose worker running on DeepSeek V4.1 Flash Fast (high reasoning)
+      instead of Claude: same tools, skills, MCP servers and CLAUDE.md as a native
+      subagent. Give it a self-contained task; it reports back.

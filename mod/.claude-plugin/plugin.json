@@ -1,0 +1,6 @@
+{
+  "name": "subagent-models",
+  "version": "0.1.0",
+  "description": "Native Claude Code subagents on non-Claude models (OpenAI- or Anthropic-compatible APIs), routed through a local gateway with fallback chains. Configured in ~/.config/subagent-models/config.yml.",
+  "license": "MIT"
+}

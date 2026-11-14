@@ -1,0 +1,10 @@
+node_modules/
+*.log
+# local, per-host state: the live config, access logs, request captures, debug output
+config.yml
+*.jsonl
+capture/
+captures/
+*.debug
+# written by Claude Code when it loads the mod from this folder
+mod/.claude-plugin/types/

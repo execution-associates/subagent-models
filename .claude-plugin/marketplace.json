@@ -1,0 +1,5 @@
+{
+  "name": "subagent-models",
+  "owner": { "name": "Execution Associates" },
+  "plugins": [{ "name": "subagent-models", "source": "./mod" }]
+}
