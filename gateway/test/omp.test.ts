@@ -222,7 +222,8 @@ describe("files", () => {
     cpSync(FIX, d, { recursive: true });
     writeFileSync(`${d}/ours.yml`, `omp:\n  dir: ${d}\n  agents: [worker]\n`);
     const c = await loadConfig(`${d}/ours.yml`, opts(fake()));
-    expect(c.sources.map(s => s.path)).toEqual([`${d}/ours.yml`, `${d}/config.yml`, `${d}/agents/worker.md`]);
+    expect(c.sources.map(s => s.path).slice(0, 3)).toEqual([`${d}/ours.yml`, `${d}/config.yml`, `${d}/agents/worker.md`]);
+    expect(c.sources.map(s => s.path).slice(3)).toEqual(expect.arrayContaining([expect.stringMatching(/omp-sdk\/current$/)]));
     writeFileSync(`${d}/config.yml`, "retry: [broken\n");
     expect((await problems({ omp: omp({ dir: d }) }))[0]).toContain(`cannot read ${d}/config.yml`);
   });

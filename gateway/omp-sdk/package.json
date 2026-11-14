@@ -1,7 +1,7 @@
 {
   "name": "subagent-models-omp-sdk",
   "private": true,
-  "description": "Optional: omp's own model registry, auth and transports, loaded by the gateway only when the config has an omp: block. Pin to the installed omp version.",
+  "description": "Baseline for omp-native mode: the SDK version this code was written and tested against, with its lockfile. The gateway does not run from here: `cli.ts omp-sdk sync` installs the version matching the installed omp into ~/.local/share/subagent-models/omp-sdk/<version>/ (this lockfile is reused when the versions match).",
   "dependencies": {
     "@oh-my-pi/pi-ai": "18.20.0",
     "@oh-my-pi/pi-coding-agent": "18.20.0"

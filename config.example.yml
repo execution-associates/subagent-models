@@ -29,7 +29,7 @@ secrets:
   # Keys stay in the gateway's memory this long, then are fetched again (a 401 refetches at once).
   keyCacheSeconds: 3600
 
-# omp-native mode (optional; needs scripts/install-omp-sdk.sh). With this block,
+# omp-native mode (optional; the matching omp SDK is fetched automatically). With this block,
 # every model omp can call routes here as <provider>/<model>, using omp's own model
 # registry, logins and transport; omp's fallback chains are imported, and anything
 # defined in this file wins key by key. Without the block nothing of omp is loaded.
@@ -38,7 +38,7 @@ secrets:
 #   # providers: [refuseless, deepseek]   # optional restriction (default: all but anthropic)
 #   fallbackChains: true                  # omp's retry.fallbackChains, maxRetries, rateLimitWalksChain
 #   agents: []                            # omp agents/<name>.md to expose, by name
-#   versionCheck: exact                   # the SDK must match the installed omp (or: warn)
+#   versionCheck: warn                    # serve through a version skew while syncing (or: exact)
 
 # Defaults for every model; a provider or a model can override them under `timeouts:`.
 timeouts:

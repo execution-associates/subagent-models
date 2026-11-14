@@ -5,10 +5,12 @@
 //   mod-config [--config FILE]   the config as the Claude Code mod reads it (JSON, no keys)
 //   status [--config FILE]       ask the running gateway for models, chains, cooldowns, recent requests
 //   key-check PROVIDER           resolve a provider's key and say whether it worked (never prints it)
+//   omp-sdk status|sync [--force]|rollback|use VERSION   the omp SDK copy that follows the installed omp
 //   omp-find PROVIDER/MODEL      how omp resolves an id, and whether it routes here (omp-native mode)
 import { ConfigError, defaultConfigPath, loadConfig, modView } from "./config";
 import { KeyStore } from "./keys";
 import { main } from "./server";
+import { describe as describeSdk, readState, realDeps, rollback, stateDir, switchTo, sync } from "./omp-sdk";
 
 const args = process.argv.slice(2);
 const cmd = args[0] ?? "help";
@@ -33,7 +35,10 @@ switch (cmd) {
     console.log(`ok: ${c.path}`);
     console.log(`socket: ${c.gateway.socket}`);
     console.log(c.omp ? `omp: native via SDK ${c.ompRuntime!.version} from ${c.omp.dir}; ${c.ompProviders.length} providers route (${c.omp.providers ? "restricted" : "all but anthropic"}); fallbackChains: ${c.omp.fallbackChains}; agents: ${c.omp.agents.join(", ") || "none"}` : "omp: off (no omp block)");
-    if (c.omp) console.log(`omp providers: ${c.ompProviders.join(", ")}`);
+    if (c.omp) {
+      console.log(`omp providers: ${c.ompProviders.join(", ")}`);
+      for (const l of describeSdk(readState())) console.log(l);
+    }
     for (const p of Object.keys(c.providers)) console.log(`provider ${p} ${o(`provider ${p}`)}: ${c.providers[p]!.api} ${c.providers[p]!.baseUrl}`);
     for (const [id, chain] of Object.entries(c.chains)) console.log(`model ${id} ${o(`model ${id}`)}: ${chain.map(t => t.ref).join(" -> ")}${chain.length > 1 ? ` (chain ${o(`chain ${id}`)})` : ""}`);
     for (const [id, m] of Object.entries(c.ompModels)) if (m.subscription) console.log(`note: ${id} is served by a subscription login in omp`);
@@ -57,6 +62,24 @@ switch (cmd) {
     } catch (e) {
       console.error(`the gateway is not answering on ${c.gateway.socket}: ${(e as Error).message}\n  systemctl --user status subagent-models`);
       process.exit(1);
+    }
+    break;
+  }
+  case "omp-sdk": {
+    const sub = args[1] ?? "status";
+    if (sub === "sync") {
+      const st = await sync(realDeps(), { force: args.includes("--force") });
+      for (const l of describeSdk(st)) console.log(l);
+      // A failed or waiting sync is not a failed unit: the gateway keeps serving, the timer retries.
+      process.exitCode = 0;
+    } else if (sub === "rollback") {
+      const st = rollback();
+      console.log(`switched to ${st.current} (was ${st.previous}); the gateway picks it up within seconds`);
+    } else if (sub === "use") {
+      const st = switchTo(args[2] ?? "");
+      console.log(`switched to ${st.current}`);
+    } else {
+      for (const l of describeSdk(readState())) console.log(l);
     }
     break;
   }

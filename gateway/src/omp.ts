@@ -67,14 +67,14 @@ export function readOmpBlock(v: unknown, problems: string[], warnings: OmpWarnin
     return x as string[];
   };
   const bool = (x: unknown, at: string, d: boolean) => (x === undefined ? d : typeof x === "boolean" ? x : (problems.push(`${at}: must be true or false`), d));
-  const vc = v.versionCheck ?? "exact";
+  const vc = v.versionCheck ?? "warn";
   if (vc !== "exact" && vc !== "warn") problems.push("omp.versionCheck: must be exact or warn");
   return {
     dir: expandHome(typeof v.dir === "string" && v.dir ? v.dir : "~/.omp/agent").replace(/\/+$/, ""),
     providers: v.providers === undefined || v.providers === null ? null : list(v.providers, "omp.providers"),
     fallbackChains: bool(v.fallbackChains, "omp.fallbackChains", true),
     agents: list(v.agents, "omp.agents"),
-    versionCheck: vc === "warn" ? "warn" : "exact",
+    versionCheck: vc === "exact" ? "exact" : "warn",
   };
 }
 

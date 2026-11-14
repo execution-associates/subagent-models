@@ -13,7 +13,7 @@
 // Everything the rest of the gateway needs goes through the OmpRuntime interface, so
 // tests use a fake and a gateway without the block never loads the SDK.
 import { existsSync, readFileSync } from "node:fs";
-import { dirname } from "node:path";
+import { currentSdkDir, installedOmp, stateDir } from "./omp-sdk";
 
 /** What the gateway knows about one omp model. */
 export type OmpModelInfo = {
@@ -65,6 +65,8 @@ export type OmpStreamOptions = {
 
 export interface OmpRuntime {
   readonly version: string;
+  /** The SDK copy's directory (tests: anything). */
+  readonly dir?: string;
   /** Every provider omp has a model for. */
   providers(): string[];
   find(provider: string, modelId: string): OmpModelInfo | undefined;
@@ -74,51 +76,62 @@ export interface OmpRuntime {
 
 export class OmpRuntimeError extends Error {}
 
-export const SDK_DIR = `${dirname(import.meta.dir)}/omp-sdk`;
-
-/** The SDK's version as installed in gateway/omp-sdk, or null when it is not installed. */
-export function installedSdkVersion(sdkDir = SDK_DIR): string | null {
+/** The SDK's version in a directory, or null when it is not installed there. */
+export function installedSdkVersion(sdkDir: string): string | null {
   const p = `${sdkDir}/node_modules/@oh-my-pi/pi-coding-agent/package.json`;
   if (!existsSync(p)) return null;
   try { return JSON.parse(readFileSync(p, "utf8")).version ?? null; } catch { return null; }
 }
 
-/** The version of the omp that last ran from this agent directory (omp writes it on start). */
-export function installedOmpVersion(agentDir: string): string | null {
-  try { return readFileSync(`${agentDir}/last-changelog-version`, "utf8").trim() || null; } catch { return null; }
+let lastKick = 0;
+/** Asks systemd to run the SDK sync now (rate-limited; a no-op where the unit is absent). */
+export function kickSync(reason: string, log: (m: string) => void = m => console.log(m)) {
+  if (process.env.SUBAGENT_MODELS_NO_SYNC_KICK) return;
+  if (Date.now() - lastKick < 60_000) return;
+  lastKick = Date.now();
+  try {
+    Bun.spawn(["systemctl", "--user", "start", "--no-block", "subagent-models-omp-sync.service"], { stdout: "ignore", stderr: "ignore", stdin: "ignore" });
+    log(`omp-sdk: started subagent-models-omp-sync.service (${reason})`);
+  } catch {}
 }
 
 const cache = new Map<string, Promise<OmpRuntime>>();
 
 /**
- * Loads the SDK for an omp agent directory (once per process and directory).
- * `versionCheck: exact` refuses an SDK whose version differs from the installed omp,
- * because omp's auth store migrates its schema forward and an SDK that is older than
- * the store only warns and carries on.
+ * Loads the SDK copy `current` points at (once per process and version directory),
+ * for an omp agent directory. A version different from the installed omp is served
+ * anyway with a warning (an older SDK reads a newer auth store) and a sync is
+ * started; `versionCheck: exact` refuses it instead.
  */
-export function loadOmpRuntime(agentDir: string, versionCheck: "exact" | "warn", warn: (m: string) => void, sdkDir = SDK_DIR): Promise<OmpRuntime> {
-  const key = `${agentDir}|${sdkDir}`;
-  let p = cache.get(key);
+export function loadOmpRuntime(agentDir: string, versionCheck: "exact" | "warn", warn: (m: string) => void, sdkDirOverride?: string): Promise<OmpRuntime> {
+  const sdkDir = sdkDirOverride ?? currentSdkDir();
+  if (!sdkDir) {
+    kickSync("no omp SDK installed");
+    return Promise.reject(new OmpRuntimeError(`omp: no omp SDK is installed yet in ${stateDir()}; the sync has been started (watch: bun gateway/src/cli.ts omp-sdk status; journalctl --user -u subagent-models-omp-sync)`));
+  }
+  const sdk = installedSdkVersion(sdkDir);
+  const omp = installedOmp(agentDir).version;
+  if (sdk && omp && omp !== sdk) {
+    kickSync(`omp is ${omp}, SDK is ${sdk}`);
+    const msg = `omp: the installed omp is ${omp} but the omp SDK in use is ${sdk}; serving with ${sdk} while the matching SDK is synced`;
+    if (versionCheck === "exact") return Promise.reject(new OmpRuntimeError(`${msg.split(";")[0]}; omp.versionCheck is exact, so omp-routed models are refused until the sync finishes`));
+    warn(msg);
+  }
+  let p = cache.get(sdkDir);
   if (!p) {
-    p = load(agentDir, versionCheck, warn, sdkDir);
-    cache.set(key, p);
-    p.catch(() => cache.delete(key));
+    p = load(agentDir, sdkDir);
+    cache.set(sdkDir, p);
+    p.catch(() => cache.delete(sdkDir));
   }
   return p;
 }
 
-async function load(agentDir: string, versionCheck: "exact" | "warn", warn: (m: string) => void, sdkDir: string): Promise<OmpRuntime> {
+async function load(agentDir: string, sdkDir: string): Promise<OmpRuntime> {
   const sdk = installedSdkVersion(sdkDir);
-  if (!sdk) {
-    throw new OmpRuntimeError(`omp: the config has an omp: block, but omp's SDK is not installed in ${sdkDir}. Install it with ${dirname(dirname(sdkDir))}/scripts/install-omp-sdk.sh (or remove the omp: block)`);
-  }
-  const omp = installedOmpVersion(agentDir);
-  if (!omp) warn(`omp: cannot tell which omp version uses ${agentDir} (no last-changelog-version); using SDK ${sdk} unchecked`);
-  else if (omp !== sdk) {
-    const msg = `omp: the installed omp is ${omp} but the gateway's omp SDK is ${sdk}. Re-pin it with scripts/install-omp-sdk.sh ${omp}`;
-    if (versionCheck === "exact") throw new OmpRuntimeError(`${msg} (or set omp.versionCheck: warn to run anyway)`);
-    warn(msg);
-  }
+  if (!sdk) throw new OmpRuntimeError(`omp: ${sdkDir} holds no omp SDK; run: bun gateway/src/cli.ts omp-sdk sync`);
+  // Each SDK copy extracts its native addon into a cache of its own: never omp's
+  // ~/.omp/natives, which omp prunes on update (and which an SDK would prune).
+  process.env.PI_NATIVES_DIR = `${sdkDir}/natives`;
   // The SDK reads PI_CODING_AGENT_DIR to find omp's directory, as omp does.
   if (agentDir) process.env.PI_CODING_AGENT_DIR ??= agentDir;
   let agent: any, ai: any;
@@ -126,7 +139,7 @@ async function load(agentDir: string, versionCheck: "exact" | "warn", warn: (m: 
     agent = await import(`${sdkDir}/node_modules/@oh-my-pi/pi-coding-agent/src/index.ts`);
     ai = await import(`${sdkDir}/node_modules/@oh-my-pi/pi-ai/src/index.ts`);
   } catch (e) {
-    throw new OmpRuntimeError(`omp: the SDK in ${sdkDir} did not load (${(e as Error).message}); reinstall it with scripts/install-omp-sdk.sh`);
+    throw new OmpRuntimeError(`omp: the SDK in ${sdkDir} did not load (${(e as Error).message}); roll back with: bun gateway/src/cli.ts omp-sdk rollback`);
   }
   for (const [name, v] of [["discoverAuthStorage", agent.discoverAuthStorage], ["ModelRegistry", agent.ModelRegistry], ["streamSimple", ai.streamSimple]] as const) {
     if (typeof v !== "function") throw new OmpRuntimeError(`omp: SDK ${sdk} has no ${name}; this gateway was written against 18.20.x`);
@@ -151,6 +164,7 @@ async function load(agentDir: string, versionCheck: "exact" | "warn", warn: (m: 
   });
   return {
     version: sdk,
+    dir: sdkDir,
     providers: () => [...new Set<string>(registry.getAll("all").map((m: any) => m.provider))].sort(),
     find(provider, modelId) {
       const m = registry.find(provider, modelId);

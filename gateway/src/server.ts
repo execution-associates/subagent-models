@@ -7,6 +7,7 @@ import { type Config, ConfigError, loadConfig, sourcesStamp } from "./config";
 import { type AttemptLog, type ChainResult, type Committed, Cooldowns, type Deps, chainFor, runChain } from "./chain";
 import { KeyStore, scrub } from "./keys";
 import { type AnthropicEvent, UpstreamError } from "./upstream";
+import { describe as describeSdk, readState } from "./omp-sdk";
 
 export const FALLBACK_HEADER = "x-subagent-models-claude-fallback";
 export const EFFORT_HEADER = "x-subagent-models-effort";
@@ -54,6 +55,7 @@ export class Gateway {
         this.reloadError = null;
         console.log(`config: reloaded ${this.cfg.path} (${Object.keys(next.models).length} models of ours, ${next.agents.length} agents${next.omp ? `, omp-native: ${next.ompProviders.length} omp providers via SDK ${next.ompRuntime?.version}` : ""})`);
         for (const w of next.warnings) console.log(`config: warning: ${w}`);
+        if (next.omp) for (const l of describeSdk(readState())) console.log(l);
       } catch (e) {
         this.reloadError = (e as Error).message;
         console.error(`config: reload failed, keeping the previous config:\n${this.reloadError}`);
@@ -91,7 +93,8 @@ export class Gateway {
     if (req.method === "GET" && url.pathname === "/status") {
       return Response.json({
         config: this.cfg.path, reloadError: this.reloadError,
-        omp: this.cfg.omp?.dir ?? null, warnings: this.cfg.warnings, origins: this.cfg.origins,
+        omp: this.cfg.omp?.dir ?? null, ompSdk: this.cfg.omp ? { inUse: this.cfg.ompRuntime?.version ?? null, ...readState() } : null,
+        warnings: this.cfg.warnings, origins: this.cfg.origins,
         models: Object.keys(this.cfg.models),
         ompProviders: this.cfg.ompProviders,
         chains: Object.fromEntries(Object.entries(this.cfg.chains).map(([k, v]) => [k, v.map(t => t.ref)])),
@@ -326,6 +329,7 @@ export async function main(configPath?: string) {
   gw.watch();
   const server = await gw.listen();
   for (const w of cfg.warnings) console.log(`config: warning: ${w}`);
+  if (cfg.omp) for (const l of describeSdk(readState())) console.log(l);
   console.log(`subagent-models gateway listening on ${cfg.gateway.socket} (config ${cfg.path}; models of ours: ${Object.keys(cfg.models).join(", ") || "none"}${cfg.omp ? `; omp-native: ${cfg.ompProviders.length} omp providers via SDK ${cfg.ompRuntime?.version}` : ""})`);
   const stop = () => { console.log("stopping"); gw.stop(); server.stop(true); unlink(cfg.gateway.socket).catch(() => {}).finally(() => process.exit(0)); };
   process.on("SIGTERM", stop);

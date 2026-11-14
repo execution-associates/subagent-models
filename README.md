@@ -171,7 +171,7 @@ omp:
   # providers: [refuseless, deepseek]   # optional restriction (default: every omp provider but anthropic)
   fallbackChains: true         # import omp's retry.fallbackChains, maxRetries, rateLimitWalksChain
   agents: []                   # omp agents/<name>.md to expose, by name
-  versionCheck: exact          # exact | warn (see below)
+  versionCheck: warn           # warn (default) | exact (see below)
 ```
 
 - **Catalogue:** omp's model registry: its built-in providers, `models.yml`, and the
@@ -204,28 +204,63 @@ omp:
   like any other omp provider; `check` notes any model a config names that is served
   by one. Restrict with `providers:` to keep them out.
 
-### The SDK: an optional dependency
+### omp's SDK: kept in step with omp automatically
 
-omp-native mode needs omp's SDK (`@oh-my-pi/pi-coding-agent` and `@oh-my-pi/pi-ai`,
-exact pins in `gateway/omp-sdk/package.json`, lockfile committed). Without an `omp:`
-block nothing of it is loaded and the gateway has no dependencies. Install it with
+omp-native mode runs omp's SDK (`@oh-my-pi/pi-coding-agent` and `@oh-my-pi/pi-ai`).
+omp is a compiled binary that updates itself, so the gateway runs its own copy, and
+that copy follows the installed omp version with no manual step:
+
+- **State** (machine state, never in git): `~/.local/share/subagent-models/omp-sdk/`:
+  one directory per version (`package.json`, `bun.lock`, `node_modules/`, `natives/`,
+  `verified.json` with the packages' integrity and the model count it saw),
+  `current` and `previous` links, and `state.json` (installed omp, sync phase,
+  last error, next retry).
+- **Tracked in git:** `gateway/omp-sdk/package.json` + `bun.lock`, the baseline the
+  code was written and tested against (18.20.0), reused as the lockfile when the
+  installed omp is that version, and the sync code. A fresh clone bootstraps itself:
+  the gateway finds no SDK, starts the sync, and serves omp models once it is done.
+- **Installed omp version:** read from the binary without running it (the single
+  `omp/<version>` marker in `/usr/local/bin/omp`, cached by size and mtime), else
+  `~/.omp/agent/last-changelog-version`.
+- **Sync** (`bun gateway/src/cli.ts omp-sdk sync`, run by
+  `subagent-models-omp-sync.service`): if no verified copy of the installed version
+  exists, it checks both packages are published on the official registry, installs
+  exactly that version in a throwaway isb sandbox that sees only a staging directory
+  (`bun install --exact --ignore-scripts`; the baseline lockfile with
+  `--frozen-lockfile` when versions match), checks the lockfile's integrity for both
+  packages against the registry's, then **verifies on the host** in a separate process
+  (the SDK loads, opens omp's auth store, lists models) and only then switches
+  `current` atomically. The old version becomes `previous`; older ones are pruned.
+  A version already verified on disk (a downgrade, a re-update) is switched to at once.
+- **Triggers:** `subagent-models-omp-sync.path` (changes to `/opt/omp/bin/omp`,
+  `/usr/local/bin/omp`, `~/.omp/agent/last-changelog-version`), the gateway itself
+  when it sees a version mismatch or no SDK, and `subagent-models-omp-sync.timer`
+  (every 10 minutes) for retries.
+- **Failure is never an outage:** not published yet, registry or network down, an
+  integrity mismatch, a failed verification: `current` stays as it was, `state.json`
+  records the cause, retries back off from 1 minute to 1 hour.
+- **Skew is served, not refused:** while omp and the SDK differ, the gateway keeps
+  serving with the SDK it has (omp's auth store reads across versions; an older SDK
+  logs a warning on a newer store and carries on), logs one warning per reload, and
+  starts the sync. `omp.versionCheck: exact` refuses omp-routed models while they
+  differ instead.
+- **The switch:** the gateway watches `current`; when it changes it loads the new
+  copy beside the old one and new requests use it, while requests in flight finish on
+  the old one. If the new copy fails to load, the gateway keeps the old one.
+- Each copy keeps its native addon in its own `natives/` (`PI_NATIVES_DIR`), never
+  in `~/.omp/natives`, which omp prunes on update and which an SDK would prune.
 
 ```sh
-scripts/install-omp-sdk.sh            # the pinned version, from the lockfile
-scripts/install-omp-sdk.sh 18.21.0    # re-pin to a newer installed omp
+bun gateway/src/cli.ts omp-sdk status        # installed omp, SDK in use, sync phase, last error
+bun gateway/src/cli.ts omp-sdk sync --force  # sync now, ignoring the backoff
+bun gateway/src/cli.ts omp-sdk rollback      # back to `previous`
+bun gateway/src/cli.ts omp-sdk use 18.19.0   # switch to a verified version on disk
+journalctl --user -u subagent-models-omp-sync -e
 ```
 
-which installs in a throwaway isb sandbox with only `gateway/omp-sdk/` mounted
-(about 460 MB, mostly omp's native binaries; no install scripts run). The gateway then
-loads it from there.
-
-**Versions:** omp updates itself, and its auth store migrates its schema forward; an
-SDK older than the store only warns and carries on. So the SDK version must match the
-installed omp (read from `~/.omp/agent/last-changelog-version`): with
-`versionCheck: exact` a mismatch is a config error naming both versions and the
-re-pin command, and the gateway keeps the last good config (or does not start);
-`versionCheck: warn` runs anyway. After omp updates: re-pin, then
-`systemctl --user restart subagent-models`.
+What runs where: the package fetch and unpack run in the isb sandbox; the
+verification and the gateway run omp's SDK on the host, as omp itself does, because
+they need omp's auth store. Disk: about 600 MB per version (two kept).
 
 ## Fallback semantics
 

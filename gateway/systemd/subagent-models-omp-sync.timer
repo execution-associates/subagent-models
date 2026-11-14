@@ -1,0 +1,10 @@
+[Unit]
+Description=subagent-models: retry the omp SDK sync (backoff is in the sync itself)
+
+[Timer]
+OnBootSec=2min
+OnUnitActiveSec=10min
+Unit=subagent-models-omp-sync.service
+
+[Install]
+WantedBy=timers.target

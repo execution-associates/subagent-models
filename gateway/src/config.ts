@@ -5,6 +5,8 @@ import { homedir } from "node:os";
 import { readFileSync, statSync } from "node:fs";
 import { type OmpBlock, type OmpWarning, type Origin, type Source, OmpError, importOmp, mergeOver, ompResolves, readOmpBlock, routableProviders } from "./omp";
 import { type OmpModelInfo, type OmpRuntime, OmpRuntimeError, loadOmpRuntime } from "./omp-runtime";
+import { ompBinaryPath, stateDir } from "./omp-sdk";
+import { readlinkSync } from "node:fs";
 
 export const LEVELS = ["off", "minimal", "low", "medium", "high", "xhigh", "max"] as const;
 export type Level = (typeof LEVELS)[number];
@@ -481,12 +483,19 @@ export async function resolve(doc: unknown, file = "config.yml", mtimeMs = 0, op
   for (const p of ours) if (runtime.providers().includes(p)) origins[`provider ${p}`] = "ours over omp";
   // A warning about an omp chain or agent our own file replaces is noise: drop it.
   const warnings = [...rtWarnings, ...[...warn, ...imported.warnings].filter(w => !w.about || !origins[w.about] || origins[w.about] === "omp").map(w => w.text)];
-  return { ...c, omp: block, origins, warnings, sources: [{ path: file, mtimeMs }, ...imported.sources], ompRuntime: runtime, ompProviders: providers };
+  // Reload when the SDK in use is switched, when omp is updated, or when the test override changes.
+  const sdkSources = [`${stateDir()}/current`, ompBinaryPath(), `${stateDir()}/installed-version.override`].map(path => ({ path, mtimeMs: 0 }));
+  return { ...c, omp: block, origins, warnings, sources: [{ path: file, mtimeMs }, ...imported.sources, ...sdkSources], ompRuntime: runtime, ompProviders: providers };
 }
 
 /** A string that changes when any source file changes (or appears, or goes). */
 export function sourcesStamp(sources: Source[]): string {
-  return sources.map(s => { let m = -1; try { m = statSync(s.path).mtimeMs; } catch {} return `${s.path}@${m}`; }).join("|");
+  return sources.map(s => {
+    let m = -1, link = "";
+    try { m = statSync(s.path).mtimeMs; } catch {}
+    try { link = readlinkSync(s.path); } catch {}
+    return `${s.path}@${m}${link ? `->${link}` : ""}`;
+  }).join("|");
 }
 
 export function parseYaml(text: string, file: string): unknown {
