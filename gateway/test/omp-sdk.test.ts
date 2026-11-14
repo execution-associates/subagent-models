@@ -106,7 +106,12 @@ describe("sync", () => {
     expect(s).toMatchObject({ current: "18.19.0", previous: "18.20.0" });
     expect(f.installs).toEqual(["18.19.0", "18.20.0"]);
     const r = rollback(dir);
-    expect(r).toMatchObject({ current: "18.20.0", previous: "18.19.0" });
+    expect(r).toMatchObject({ current: "18.20.0", previous: "18.19.0", pinned: { version: "18.20.0", whileOmp: "18.19.0" } });
+    // pinned: the sync does not undo the rollback while omp stays the same
+    expect(await sync(f, { dir, agentDir: root })).toMatchObject({ current: "18.20.0" });
+    // omp changes: the pin is dropped and the sync follows omp again
+    at("18.21.0");
+    expect(await sync(f, { dir, agentDir: root })).toMatchObject({ current: "18.21.0", pinned: null });
   });
 
   test("a second sync while one runs does nothing", async () => {

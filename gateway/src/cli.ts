@@ -5,12 +5,12 @@
 //   mod-config [--config FILE]   the config as the Claude Code mod reads it (JSON, no keys)
 //   status [--config FILE]       ask the running gateway for models, chains, cooldowns, recent requests
 //   key-check PROVIDER           resolve a provider's key and say whether it worked (never prints it)
-//   omp-sdk status|sync [--force]|rollback|use VERSION   the omp SDK copy that follows the installed omp
+//   omp-sdk status|sync [--force]|rollback|unpin|use VERSION   the omp SDK copy that follows the installed omp
 //   omp-find PROVIDER/MODEL      how omp resolves an id, and whether it routes here (omp-native mode)
 import { ConfigError, defaultConfigPath, loadConfig, modView } from "./config";
 import { KeyStore } from "./keys";
 import { main } from "./server";
-import { describe as describeSdk, readState, realDeps, rollback, stateDir, switchTo, sync } from "./omp-sdk";
+import { describe as describeSdk, readState, realDeps, rollback, stateDir, switchTo, sync, unpin } from "./omp-sdk";
 
 const args = process.argv.slice(2);
 const cmd = args[0] ?? "help";
@@ -74,7 +74,10 @@ switch (cmd) {
       process.exitCode = 0;
     } else if (sub === "rollback") {
       const st = rollback();
-      console.log(`switched to ${st.current} (was ${st.previous}); the gateway picks it up within seconds`);
+      console.log(`switched to ${st.current} (was ${st.previous}), pinned while omp stays ${st.pinned?.whileOmp}; the gateway picks it up within seconds`);
+    } else if (sub === "unpin") {
+      unpin();
+      console.log("unpinned: the next sync follows the installed omp");
     } else if (sub === "use") {
       const st = switchTo(args[2] ?? "");
       console.log(`switched to ${st.current}`);

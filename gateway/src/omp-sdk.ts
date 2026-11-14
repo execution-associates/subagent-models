@@ -44,9 +44,11 @@ export type SyncState = {
   nextAttemptAt: number | null;
   attempts: number;
   lastSwitchAt: number | null;
+  /** Set by rollback: stay on `version` while the installed omp is still `whileOmp`. */
+  pinned: { version: string; whileOmp: string | null } | null;
 };
 
-const EMPTY: SyncState = { installedOmp: null, installedFrom: null, current: null, previous: null, phase: "idle", target: null, lastError: null, lastAttemptAt: null, nextAttemptAt: null, attempts: 0, lastSwitchAt: null };
+const EMPTY: SyncState = { installedOmp: null, installedFrom: null, current: null, previous: null, phase: "idle", target: null, lastError: null, lastAttemptAt: null, nextAttemptAt: null, attempts: 0, lastSwitchAt: null, pinned: null };
 
 export function readState(dir = stateDir()): SyncState {
   try { return { ...EMPTY, ...JSON.parse(readFileSync(`${dir}/state.json`, "utf8")) }; } catch { return { ...EMPTY }; }
@@ -220,6 +222,10 @@ export async function sync(deps: SyncDeps, o: SyncOptions = {}): Promise<SyncSta
     s = { ...s, installedOmp: inst.version, installedFrom: inst.from, current: linkedVersion(dir, "current"), previous: linkedVersion(dir, "previous") };
     if (!inst.version) { s = { ...s, phase: "failed", lastError: "cannot tell which omp version is installed" }; return s; }
     const v = inst.version;
+    if (s.pinned) {
+      if (s.pinned.whileOmp === v && s.current === s.pinned.version) { s = { ...s, phase: "idle", target: null }; return s; }
+      s = { ...s, pinned: null }; // omp changed since the rollback: follow it again
+    }
     if (s.current === v && currentSdkDir(dir)) { s = { ...s, phase: "idle", target: null, lastError: null, attempts: 0, nextAttemptAt: null }; return s; }
     // A verified copy already on disk (a downgrade, or after a rollback): switch at once.
     if (existsSync(`${dir}/${v}/verified.json`)) {
@@ -284,7 +290,17 @@ export async function sync(deps: SyncDeps, o: SyncOptions = {}): Promise<SyncSta
 export function rollback(dir = stateDir(), now = Date.now()): SyncState {
   const prev = linkedVersion(dir, "previous");
   if (!prev) throw new Error("no previous omp SDK to roll back to");
-  return switchTo(prev, dir, now);
+  const s = switchTo(prev, dir, now);
+  const pinned = { ...s, pinned: { version: prev, whileOmp: installedOmp(undefined, dir).version } };
+  writeState(dir, pinned);
+  return pinned;
+}
+
+/** Drops a rollback's pin: the next sync follows the installed omp again. */
+export function unpin(dir = stateDir()): SyncState {
+  const s = { ...readState(dir), pinned: null, nextAttemptAt: null };
+  writeState(dir, s);
+  return s;
 }
 
 // ---------- the real steps ----------
@@ -343,11 +359,14 @@ export const realDeps = (log: (m: string) => void = m => console.log(m)): SyncDe
 
 /** One line per fact, for `check`, `status` and the unit's journal. */
 export function describe(s = readState(), dir = stateDir()): string[] {
+  const live = installedOmp(undefined, dir);
+  const cur = linkedVersion(dir, "current");
   const lines = [
-    `omp installed: ${s.installedOmp ?? "unknown"}${s.installedFrom ? ` (${s.installedFrom})` : ""}`,
+    `omp installed: ${live.version ?? "unknown"}${live.from ? ` (${live.from})` : ""}${live.version && cur && live.version !== cur ? ` — differs from the SDK in use (${cur}); serving with ${cur} until the sync switches` : ""}`,
     `omp SDK in use: ${linkedVersion(dir, "current") ?? "none"}${linkedVersion(dir, "previous") ? ` (previous: ${linkedVersion(dir, "previous")})` : ""} in ${dir}`,
     `omp SDK sync: ${s.phase}${s.target ? ` -> ${s.target}` : ""}${s.nextAttemptAt ? `, next try ${new Date(s.nextAttemptAt).toISOString()}` : ""}`,
   ];
+  if (s.pinned) lines.push(`omp SDK pinned to ${s.pinned.version} by a rollback while omp is ${s.pinned.whileOmp ?? "unknown"} (omp-sdk unpin to follow omp again)`);
   if (s.lastError) lines.push(`omp SDK last error: ${s.lastError}`);
   return lines;
 }

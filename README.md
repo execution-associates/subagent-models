@@ -253,14 +253,15 @@ that copy follows the installed omp version with no manual step:
 ```sh
 bun gateway/src/cli.ts omp-sdk status        # installed omp, SDK in use, sync phase, last error
 bun gateway/src/cli.ts omp-sdk sync --force  # sync now, ignoring the backoff
-bun gateway/src/cli.ts omp-sdk rollback      # back to `previous`
+bun gateway/src/cli.ts omp-sdk rollback      # back to `previous`, pinned until omp changes again
+bun gateway/src/cli.ts omp-sdk unpin         # follow the installed omp again
 bun gateway/src/cli.ts omp-sdk use 18.19.0   # switch to a verified version on disk
 journalctl --user -u subagent-models-omp-sync -e
 ```
 
 What runs where: the package fetch and unpack run in the isb sandbox; the
 verification and the gateway run omp's SDK on the host, as omp itself does, because
-they need omp's auth store. Disk: about 600 MB per version (two kept).
+they need omp's auth store. Disk: about 470 MB per version (two kept).
 
 ## Fallback semantics
 
