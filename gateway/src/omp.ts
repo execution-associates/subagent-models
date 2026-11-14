@@ -174,7 +174,7 @@ export function importOmp(block: OmpBlock): OmpImport {
         for (const e of list) {
           if (typeof e !== "string") continue;
           if (routable(e)) kept.push(e);
-          else warnings.push({ about: `chain ${id}`, text: `omp chain ${key}: entry ${e} is not routable here (an omp built-in provider, or a provider not in omp.providers); skipped` });
+          else warnings.push({ about: `chain ${id}`, text: `omp chain ${key}: entry ${e} is not an imported model (an omp built-in provider, a provider not in omp.providers, or a model left out by omp.models); skipped` });
         }
         chains[id] = kept;
       }

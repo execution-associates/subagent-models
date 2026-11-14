@@ -41,7 +41,7 @@ describe("import", () => {
   test("chains: unroutable entries are skipped with a warning, Claude entries kept as the hand-back", () => {
     expect(c.chains["acme/fast-1"]!.map(t => t.ref)).toEqual(["acme/fast-1", "acme/slow-2:high", "other/o-1", "anthropic/claude-sonnet-5-5:medium"]);
     expect(c.chains["acme/fast-1"]![3]!.kind).toBe("claude");
-    expect(c.warnings).toContain("omp chain acme/fast-1: entry deepseek/deepseek-v4-flash:high is not routable here (an omp built-in provider, or a provider not in omp.providers); skipped");
+    expect(c.warnings).toContain("omp chain acme/fast-1: entry deepseek/deepseek-v4-flash:high is not an imported model (an omp built-in provider, a provider not in omp.providers, or a model left out by omp.models); skipped");
     expect(c.retry).toMatchObject({ maxRetries: 4, rateLimitWalksChain: false });
   });
 
