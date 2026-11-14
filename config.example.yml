@@ -29,6 +29,19 @@ secrets:
   # Keys stay in the gateway's memory this long, then are fetched again (a 401 refetches at once).
   keyCacheSeconds: 3600
 
+# omp compatibility (optional). With this block, providers, models, fallback chains
+# and agents are imported read-only from omp's own files (models.yml, config.yml,
+# agents/<name>.md), and everything in this file is laid over them key by key: a
+# provider's or model's field, a chain, an agent, a timeout defined here wins.
+# Without the block no omp file is read. `check` shows each item's origin.
+# omp:
+#   dir: ~/.omp/agent
+#   providers: [refuseless]        # omp providers to import, by name (none by default)
+#   # models: [refuseless/deepseek-v4.1-flash-fast]   # optional: import only these
+#   fallbackChains: true           # retry.fallbackChains, maxRetries, rateLimitWalksChain
+#   timeouts: false                # providers.stream*TimeoutSeconds (global in omp!)
+#   agents: []                     # omp agents/<name>.md to expose, by name (none by default)
+
 # Defaults for every model; a provider or a model can override them under `timeouts:`.
 timeouts:
   # The upstream must produce its first event within this long, or the attempt fails
@@ -59,6 +72,8 @@ retry:
     refuseless/deepseek-v4.1-flash-fast:
       - refuseless/glm-5.3-flash-abliterated:high
       - anthropic/claude-sonnet-5-5:medium
+    refuseless/deepseek-v4.1-flash-abliterated:
+      - refuseless/glm-5.3-flash-abliterated:high
 
 providers:
   refuseless:
@@ -90,6 +105,13 @@ providers:
         contextWindow: 1048576
         maxTokens: 262144
         defaultLevel: high
+      deepseek-v4.1-flash-abliterated:
+        name: DeepSeek V4.1 Flash Abliterated
+        reasoning: true
+        input: [text, image]
+        contextWindow: 1048576
+        maxTokens: 130000
+        defaultLevel: high
       glm-5.3-flash-abliterated:
         name: GLM 5.3 Flash Abliterated
         reasoning: true
@@ -117,9 +139,20 @@ providers:
 # permissionMode, memory, initialPrompt, autoCompactWindow, ...
 # Left out: tools = every tool, prompt = the general-purpose agent's.
 agents:
-  deepseek:
+  deepseek-flash:
     model: refuseless/deepseek-v4.1-flash-fast:high
     description: >-
-      General-purpose worker running on DeepSeek V4.1 Flash Fast (high reasoning)
-      instead of Claude: same tools, skills, MCP servers and CLAUDE.md as a native
-      subagent. Give it a self-contained task; it reports back.
+      Refuseless DeepSeek Flash (DeepSeek V4.1 Flash Fast, high reasoning): a fast,
+      cheap general-purpose implementation worker running on DeepSeek instead of
+      Claude, with the same tools, skills, MCP servers and CLAUDE.md as a native
+      subagent. Use when the user asks for "deepseek", "deepseek flash" or
+      "refuseless deepseek flash" subagents. Give it a self-contained task; it
+      reports back.
+  deepseek-flash-abliterated:
+    model: refuseless/deepseek-v4.1-flash-abliterated:high
+    description: >-
+      Refuseless DeepSeek Flash Abliterated (DeepSeek V4.1 Flash, refusal-removed,
+      high reasoning): general-purpose worker with the same tools, skills, MCP
+      servers and CLAUDE.md as a native subagent. Use only when the user asks for
+      the "abliterated" DeepSeek subagent; otherwise prefer deepseek-flash.
+      Give it a self-contained task; it reports back.

@@ -1,7 +1,7 @@
 node_modules/
 *.log
 # local, per-host state: the live config, access logs, request captures, debug output
-config.yml
+/config.yml
 *.jsonl
 capture/
 captures/

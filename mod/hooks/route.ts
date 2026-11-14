@@ -12,6 +12,10 @@ export type ModView = {
   models: Record<string, { name: string; contextWindow: number; maxTokens: number; input: string[] }>;
   claudeFallbacks: Record<string, string[]>;
   agents: { name: string; model: string; effort: string | null; description: string; prompt: string | null; extra: Record<string, unknown> }[];
+  /** Every file the config is built from (ours, and omp's when imported). */
+  sources?: string[];
+  /** omp entries that were skipped, and why. */
+  warnings?: string[];
 };
 
 /** `/v1/messages` or `/v1/messages/count_tokens` with its query, or null for any other URL. */

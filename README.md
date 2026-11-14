@@ -71,7 +71,7 @@ short answer. `ping` events go out every `pingIntervalSeconds` while the upstrea
   (`claude-…`), and the provider name `anthropic` is reserved, so a routed id never
   collides with a real Anthropic id: if the mod is not loaded, Anthropic answers
   `model_not_found` (404) and nothing is answered by Claude.
-- YAML agents are registered as `subagent-models:<name>` (`subagent-models:deepseek`).
+- YAML agents are registered as `subagent-models:<name>` (`subagent-models:deepseek-flash`).
   A plain `~/.claude/agents/*.md` (or project `.claude/agents/*.md`) whose `model:` is
   a configured id works the same way; routing is by the id in the request.
 - A level suffix (`:off :minimal :low :medium :high :xhigh :max`) picks the reasoning
@@ -83,7 +83,7 @@ short answer. `ping` events go out every `pingIntervalSeconds` while the upstrea
 ## Configuration
 
 One file: `~/.config/subagent-models/config.yml` (`$SUBAGENT_MODELS_CONFIG` overrides,
-for both the gateway and the mod). `config.example.yml` is the annotated reference;
+for both the gateway and the mod), optionally importing from omp (see omp compatibility). `config.example.yml` is the annotated reference;
 the live file starts as a copy of it. Edits are picked up within ~3 s by the gateway
 and the mod. A broken edit is reported (`journalctl --user -u subagent-models`, and
 a line in the Claude Code transcript) and the last good config stays in force.
@@ -160,11 +160,55 @@ retry:
       - anthropic/claude-sonnet-5-5:medium     # a real Claude model, served by the mod
 ```
 
+## omp compatibility
+
+For [omp](https://omp.sh) users, an optional `omp:` block imports providers,
+models, fallback chains and agents from omp's own files, so they are defined once:
+
+```yaml
+omp:
+  dir: ~/.omp/agent
+  providers: [refuseless]       # which omp providers to import; nothing by default
+  models: [refuseless/deepseek-v4.1-flash-fast]   # optional: only these models
+  fallbackChains: true          # omp's retry.fallbackChains, maxRetries, rateLimitWalksChain
+  timeouts: false               # omp's providers.stream*TimeoutSeconds
+  agents: []                    # omp agents/<name>.md to expose, by name
+```
+
+- Read-only and dependency-free: `models.yml`, `config.yml` and `agents/<name>.md`
+  under `dir` are parsed directly. omp is never run, nothing under its directory is
+  written, its databases are never opened. Without the block none of this happens.
+- What is imported: a provider's `baseUrl`, `api`, `apiKey` (its `!command` runs in
+  the gateway like any of ours, and is never logged), `headers`, and its models'
+  `id`, `name`, `reasoning`, `input`, `contextWindow`, `maxTokens` and the compat
+  knobs this gateway knows (`reasoningEffortMap`, `maxTokensField`, …). Other omp
+  keys are ignored. Model ids stay `<provider>/<model>`, under the same rules
+  (no `claude-` in an id, `anthropic` reserved).
+- **Precedence: this file wins, key by key.** A provider or model defined in both
+  merges field by field (compat maps key by key); a chain, an agent, a timeout or a
+  retry setting defined here replaces omp's. `cli.ts check` prints the merged result
+  with each item's origin: `[ours]`, `[omp]` or `[ours over omp]`.
+- Skipped with a warning (in `check`, the gateway journal and the transcript), never
+  an error: a listed provider missing from `models.yml` or speaking an API the gateway
+  does not (omp built-ins such as `openai-codex-responses`), a model id with a Claude
+  name, a chain entry naming something not imported (omp built-in providers such as
+  `deepseek/…`, a provider not in `providers`), an agent whose model is not imported.
+  `anthropic/claude-*` chain entries become the usual Claude hand-back.
+- omp agents are opt-in by name because their prompts are written for omp's tools,
+  not Claude Code's; read one before exposing it. They are registered as
+  `subagent-models:<name>`; omp-only frontmatter (such as `tools`) is ignored.
+- Timeouts are not imported by default: omp's `providers.streamFirstEventTimeoutSeconds`
+  and `streamIdleTimeoutSeconds` apply to every omp provider at once (default `-1`,
+  meaning omp's own 5-minute watchdogs). omp's per-model `compat.streamFirstEventTimeoutMs`
+  / `compat.streamIdleTimeoutMs` are imported as that model's timeouts when `timeouts: true`.
+- omp updates itself: a missing, unparsable or reshaped omp file is reported and the
+  last good merged config stays in force, as for a broken edit here. The gateway and
+  the mod re-read whenever any imported file changes.
+
 ## Fallback semantics
 
 Vocabulary follows omp (`retry.maxRetries`, `retry.rateLimitWalksChain`,
-`retry.fallbackChains`, `streamFirstEventTimeoutSeconds`, `streamIdleTimeoutSeconds`;
-omp's live values are 2 / true / 10 s / 10 s).
+`retry.fallbackChains`, `streamFirstEventTimeoutSeconds`, `streamIdleTimeoutSeconds`).
 
 - A request's chain is `[its model, ...fallbackChains[its model]]`.
 - Each model gets `1 + maxRetries` attempts (backoff `baseDelayMs·2^n`, capped at
@@ -255,7 +299,7 @@ For every session, either:
    ```
    then `/reload-plugins` in running sessions.
 
-Then `Agent(subagent_type: "subagent-models:deepseek", …)`.
+Then `Agent(subagent_type: "subagent-models:deepseek-flash", …)`.
 
 ## Context window and compaction
 

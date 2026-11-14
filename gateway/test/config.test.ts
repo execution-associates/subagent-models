@@ -13,11 +13,12 @@ const base = () => ({
 describe("config", () => {
   test("the example config is valid", () => {
     const c = validate(parseYaml(example, "example"), "example");
-    expect(Object.keys(c.models)).toEqual(["refuseless/deepseek-v4.1-flash-fast", "refuseless/glm-5.3-flash-abliterated"]);
+    expect(Object.keys(c.models)).toEqual(["refuseless/deepseek-v4.1-flash-fast", "refuseless/deepseek-v4.1-flash-abliterated", "refuseless/glm-5.3-flash-abliterated"]);
     expect(c.chains["refuseless/deepseek-v4.1-flash-fast"]!.map(t => t.ref)).toEqual([
       "refuseless/deepseek-v4.1-flash-fast", "refuseless/glm-5.3-flash-abliterated:high", "anthropic/claude-sonnet-5-5:medium",
     ]);
-    expect(c.agents[0]).toMatchObject({ name: "deepseek", model: "refuseless/deepseek-v4.1-flash-fast", effort: "high" });
+    expect(c.agents.map(a => a.name)).toEqual(["deepseek-flash", "deepseek-flash-abliterated"]);
+    expect(c.agents[0]).toMatchObject({ model: "refuseless/deepseek-v4.1-flash-fast", effort: "high" });
     expect(c.models["refuseless/deepseek-v4.1-flash-fast"]!.openai.reasoningEffortMap.medium).toBe("high");
     expect(c.models["refuseless/deepseek-v4.1-flash-fast"]!.openai.reasoningEffortMap.off).toBe("off");
   });

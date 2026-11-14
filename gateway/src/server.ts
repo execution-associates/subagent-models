@@ -2,9 +2,8 @@
 // configured upstreams. Only the Claude Code mod talks to it.
 import { appendFile, mkdir, chmod, unlink, writeFile } from "node:fs/promises";
 import { dirname } from "node:path";
-import { statSync } from "node:fs";
 import { BadRequest, estimateTokens, normalize } from "./canonical";
-import { type Config, ConfigError, loadConfig } from "./config";
+import { type Config, ConfigError, loadConfig, sourcesStamp } from "./config";
 import { type AttemptLog, type ChainResult, type Committed, Cooldowns, type Deps, runChain } from "./chain";
 import { KeyStore, scrub } from "./keys";
 import { type AnthropicEvent, UpstreamError } from "./upstream";
@@ -34,20 +33,22 @@ export class Gateway {
     this.overrides = overrides;
   }
 
-  /** Re-reads the config file when it changes; a broken edit keeps the last good config. */
+  /** Re-reads the config when any of its files changes (ours, and omp's when imported); a broken edit keeps the last good config. */
   watch(intervalMs = 2000) {
+    let stamp = sourcesStamp(this.cfg.sources);
     this.watcher = setInterval(() => {
-      let m: number;
-      try { m = statSync(this.cfg.path).mtimeMs; } catch { return; }
-      if (m === this.cfg.mtimeMs) return;
+      const now = sourcesStamp(this.cfg.sources);
+      if (now === stamp) return;
+      stamp = now;
       try {
         const next = loadConfig(this.cfg.path);
         if (next.gateway.socket !== this.cfg.gateway.socket) console.log(`config: gateway.socket changed; restart the gateway to move it`);
         this.cfg = next;
+        stamp = sourcesStamp(next.sources);
         this.reloadError = null;
-        console.log(`config: reloaded ${this.cfg.path} (${Object.keys(next.models).length} models, ${next.agents.length} agents)`);
+        console.log(`config: reloaded ${this.cfg.path} (${Object.keys(next.models).length} models, ${next.agents.length} agents${next.omp ? `, omp import from ${next.omp.dir}` : ""})`);
+        for (const w of next.warnings) console.log(`config: warning: ${w}`);
       } catch (e) {
-        this.cfg = { ...this.cfg, mtimeMs: m };
         this.reloadError = (e as Error).message;
         console.error(`config: reload failed, keeping the previous config:\n${this.reloadError}`);
       }
@@ -84,6 +85,7 @@ export class Gateway {
     if (req.method === "GET" && url.pathname === "/status") {
       return Response.json({
         config: this.cfg.path, reloadError: this.reloadError,
+        omp: this.cfg.omp?.dir ?? null, warnings: this.cfg.warnings, origins: this.cfg.origins,
         models: Object.keys(this.cfg.models),
         chains: Object.fromEntries(Object.entries(this.cfg.chains).map(([k, v]) => [k, v.map(t => t.ref)])),
         cooldowns: this.cooldowns.list(),
@@ -315,6 +317,7 @@ export async function main(configPath?: string) {
   const gw = new Gateway(cfg);
   gw.watch();
   const server = await gw.listen();
+  for (const w of cfg.warnings) console.log(`config: warning: ${w}`);
   console.log(`subagent-models gateway listening on ${cfg.gateway.socket} (config ${cfg.path}; models: ${Object.keys(cfg.models).join(", ")})`);
   const stop = () => { console.log("stopping"); gw.stop(); server.stop(true); unlink(cfg.gateway.socket).catch(() => {}).finally(() => process.exit(0)); };
   process.on("SIGTERM", stop);

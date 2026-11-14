@@ -28,10 +28,17 @@ switch (cmd) {
     break;
   case "check": {
     const c = load();
+    const o = (k: string) => `[${c.origins[k] ?? "ours"}]`;
     console.log(`ok: ${c.path}`);
     console.log(`socket: ${c.gateway.socket}`);
-    for (const [id, chain] of Object.entries(c.chains)) console.log(`model ${id}: ${chain.map(t => t.ref).join(" -> ")}`);
-    for (const a of c.agents) console.log(`agent subagent-models:${a.name}: ${a.model}${a.effort ? ` (effort ${a.effort})` : ""}`);
+    console.log(c.omp ? `omp: importing from ${c.omp.dir} (providers: ${c.omp.providers.join(", ") || "none"}; fallbackChains: ${c.omp.fallbackChains}; timeouts: ${c.omp.timeouts}; agents: ${c.omp.agents.join(", ") || "none"})` : "omp: off (no omp block)");
+    for (const p of Object.keys(c.providers)) console.log(`provider ${p} ${o(`provider ${p}`)}: ${c.providers[p]!.api} ${c.providers[p]!.baseUrl}`);
+    for (const [id, chain] of Object.entries(c.chains)) console.log(`model ${id} ${o(`model ${id}`)}: ${chain.map(t => t.ref).join(" -> ")}${chain.length > 1 ? ` (chain ${o(`chain ${id}`)})` : ""}`);
+    const t = c.timeouts;
+    console.log(`timeouts: firstEvent ${t.streamFirstEventTimeoutSeconds}s ${o("timeouts.streamFirstEventTimeoutSeconds")}, idle ${t.streamIdleTimeoutSeconds}s ${o("timeouts.streamIdleTimeoutSeconds")}, total ${t.totalTimeoutSeconds || "off"}`);
+    console.log(`retry: maxRetries ${c.retry.maxRetries} ${o("retry.maxRetries")}, rateLimitWalksChain ${c.retry.rateLimitWalksChain} ${o("retry.rateLimitWalksChain")}, cooldown ${c.retry.cooldownSeconds}s`);
+    for (const a of c.agents) console.log(`agent subagent-models:${a.name} ${o(`agent ${a.name}`)}: ${a.model}${a.effort ? ` (effort ${a.effort})` : ""}`);
+    for (const w of c.warnings) console.log(`warning: ${w}`);
     break;
   }
   case "mod-config": {

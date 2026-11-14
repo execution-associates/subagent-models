@@ -3,6 +3,7 @@
 // can fix it from the message alone.
 import { homedir } from "node:os";
 import { readFileSync, statSync } from "node:fs";
+import { type OmpBlock, type Origin, type Source, OmpError, importOmp, mergeOver, readOmpBlock } from "./omp";
 
 export const LEVELS = ["off", "minimal", "low", "medium", "high", "xhigh", "max"] as const;
 export type Level = (typeof LEVELS)[number];
@@ -105,6 +106,14 @@ export type Config = {
   /** Routed id -> [primary, ...fallbacks]. */
   chains: Record<string, Target[]>;
   agents: AgentDef[];
+  /** The omp block, or null when the file has none (then no omp file is read). */
+  omp: OmpBlock | null;
+  /** Where each provider, model, chain, agent and imported setting came from. */
+  origins: Record<string, Origin>;
+  /** Imported entries that were skipped, and why. */
+  warnings: string[];
+  /** Every file this config was built from (ours first), for hot reload. */
+  sources: Source[];
 };
 
 export class ConfigError extends Error {
@@ -262,7 +271,7 @@ const ID_OK = /^[A-Za-z0-9._\-\/]+$/;
 export function validate(doc: unknown, file = "config.yml", mtimeMs = 0): Config {
   const problems: P = [];
   if (!isObj(doc)) throw new ConfigError(["the file must be a YAML map at the top level"], file);
-  known(doc, ["gateway", "secrets", "timeouts", "retry", "providers", "agents"], "(top level)", problems);
+  known(doc, ["gateway", "secrets", "timeouts", "retry", "providers", "agents", "omp"], "(top level)", problems);
 
   const g = isObj(doc.gateway) ? doc.gateway : doc.gateway === undefined ? {} : (problems.push("gateway: must be a map"), {});
   known(g, ["socket", "accessLog", "captureDir", "pingIntervalSeconds"], "gateway", problems);
@@ -392,7 +401,36 @@ export function validate(doc: unknown, file = "config.yml", mtimeMs = 0): Config
   }
 
   if (problems.length) throw new ConfigError(problems, file);
-  return { path: file, mtimeMs, gateway, secrets, timeouts: globalTimeouts, retry, providers, models, chains, agents };
+  return { path: file, mtimeMs, gateway, secrets, timeouts: globalTimeouts, retry, providers, models, chains, agents, omp: null, origins: {}, warnings: [], sources: [{ path: file, mtimeMs }] };
+}
+
+/**
+ * Our parsed document, with an `omp:` block resolved: the omp files are read, turned
+ * into our shape, our document laid over them, and the result validated. Without
+ * the block this is validate() alone and no omp file is looked at.
+ */
+export function resolve(doc: unknown, file = "config.yml", mtimeMs = 0): Config {
+  if (!isObj(doc) || doc.omp === undefined || doc.omp === null) {
+    const c = validate(doc, file, mtimeMs);
+    for (const id of Object.keys(c.models)) c.origins[`model ${id}`] = "ours";
+    return c;
+  }
+  const problems: P = [];
+  const block = readOmpBlock(doc.omp, problems);
+  if (problems.length || !block) throw new ConfigError(problems, file);
+  let imported;
+  try { imported = importOmp(block); }
+  catch (e) { if (e instanceof OmpError) throw new ConfigError([e.message], file); throw e; }
+  const { merged, origins } = mergeOver(imported.doc, doc);
+  const c = validate(merged, file, mtimeMs);
+  // A warning about an omp chain or agent our own file replaces is noise: drop it.
+  const warnings = imported.warnings.filter(w => !w.about || !origins[w.about] || origins[w.about] === "omp").map(w => w.text);
+  return { ...c, omp: block, origins, warnings, sources: [{ path: file, mtimeMs }, ...imported.sources] };
+}
+
+/** A string that changes when any source file changes (or appears, or goes). */
+export function sourcesStamp(sources: Source[]): string {
+  return sources.map(s => { let m = -1; try { m = statSync(s.path).mtimeMs; } catch {} return `${s.path}@${m}`; }).join("|");
 }
 
 export function parseYaml(text: string, file: string): unknown {
@@ -411,7 +449,7 @@ export function loadConfig(file = defaultConfigPath()): Config {
   } catch (e) {
     throw new ConfigError([`cannot read the file: ${(e as Error).message}. Copy config.example.yml there to start`], file);
   }
-  return validate(parseYaml(text, file), file, mtimeMs);
+  return resolve(parseYaml(text, file), file, mtimeMs);
 }
 
 /** What the mod needs, as plain JSON (no keys: apiKey sources are not included). */
@@ -424,6 +462,9 @@ export function modView(c: Config) {
     /** Routed id -> Claude models its chain may hand back to the session. */
     claudeFallbacks: Object.fromEntries(Object.entries(c.chains).map(([id, ts]) => [id, ts.filter(t => t.kind === "claude").map(t => (t as { claudeModel: string }).claudeModel)])),
     agents: c.agents.map(a => ({ name: a.name, model: a.model, effort: a.effort, description: a.description, prompt: a.prompt, extra: a.extra })),
+    /** Every file the config was built from: the mod re-reads when any changes. */
+    sources: c.sources.map(s => s.path),
+    warnings: c.warnings,
   };
 }
 export type ModView = ReturnType<typeof modView>;

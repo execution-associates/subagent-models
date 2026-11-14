@@ -35,12 +35,27 @@ async function readConfig($: EngineInterface, path: string): Promise<{ ok: true;
   catch { return { ok: false, error: `cannot run ${cli} (exit ${r.exitCode}): ${r.stderr.slice(0, 300)}` }; }
 }
 
+/** One string for the modification times of every file the config is built from. */
+async function stampOf($: EngineInterface, paths: string[]): Promise<string> {
+  const parts: string[] = [];
+  for (const p of paths) {
+    let m = -1;
+    try { m = (await $.fs.stat(p)).mtimeMs; } catch {}
+    parts.push(`${p}@${m}`);
+  }
+  return parts.join("|");
+}
+
+let stamp = "";
+let warned = new Set<string>();
+
 async function refresh($: EngineInterface, { force = false } = {}) {
   const path = await configPath($);
-  let mtimeMs = -1;
-  try { mtimeMs = (await $.fs.stat(path)).mtimeMs; } catch {}
-  if (!force && view && view.path === path && view.mtimeMs === mtimeMs) return;
-  if (!force && !view && mtimeMs === -1 && configError) return;
+  // Our file, plus every omp file the last good config was built from.
+  const paths = view && view.path === path ? [path, ...(view.sources ?? []).filter(p => p !== path)] : [path];
+  const now = await stampOf($, paths);
+  if (!force && now === stamp) return;
+  stamp = now;
   const r = await readConfig($, path);
   if (!r.ok) {
     if (r.error !== configError) $.ui.log(`subagent-models: ${r.error}${view ? " (keeping the previous config)" : ""}`);
@@ -49,13 +64,15 @@ async function refresh($: EngineInterface, { force = false } = {}) {
       // No good config this session yet: fall back to the last one that worked, so
       // its model ids still route (and fail loudly) instead of reaching Anthropic.
       const saved = (await $.store.get("lastGoodConfig").catch(() => undefined)) as ModView | undefined;
-      if (saved) view = { ...saved, mtimeMs: -2 };
-    } else view = { ...view, mtimeMs };
+      if (saved) view = saved;
+    }
     return;
   }
   configError = null;
   view = r.config;
+  stamp = await stampOf($, [path, ...(view.sources ?? []).filter(p => p !== path)]);
   await $.store.set("lastGoodConfig", view).catch(() => {});
+  for (const w of view.warnings ?? []) if (!warned.has(w)) { warned.add(w); $.ui.log(`subagent-models: ${w}`); }
   for (const a of view.agents) {
     try {
       await $.agent.register(agentSpec(a, view) as Parameters<EngineInterface["agent"]["register"]>[0]);

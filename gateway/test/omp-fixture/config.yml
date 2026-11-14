@@ -1,0 +1,20 @@
+# Shape of omp's ~/.omp/agent/config.yml (only the parts imported, plus unrelated keys).
+defaultThinkingLevel: high
+modelRoles:
+  default: acme/fast-1:high
+providers:
+  streamFirstEventTimeoutSeconds: 10
+  streamIdleTimeoutSeconds: -1
+  webSearchTimeoutSeconds: 60
+retry:
+  maxRetries: 4
+  rateLimitWalksChain: false
+  baseDelayMs: 500
+  fallbackChains:
+    acme/fast-1:
+      - deepseek/deepseek-v4-flash:high
+      - acme/slow-2:high
+      - other/o-1
+      - anthropic/claude-sonnet-5-5:medium
+    other/o-1:
+      - acme/fast-1
