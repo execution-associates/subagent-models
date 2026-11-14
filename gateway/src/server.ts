@@ -4,7 +4,7 @@ import { appendFile, mkdir, chmod, unlink, writeFile } from "node:fs/promises";
 import { dirname } from "node:path";
 import { BadRequest, estimateTokens, normalize } from "./canonical";
 import { type Config, ConfigError, loadConfig, sourcesStamp } from "./config";
-import { type AttemptLog, type ChainResult, type Committed, Cooldowns, type Deps, runChain } from "./chain";
+import { type AttemptLog, type ChainResult, type Committed, Cooldowns, type Deps, chainFor, runChain } from "./chain";
 import { KeyStore, scrub } from "./keys";
 import { type AnthropicEvent, UpstreamError } from "./upstream";
 
@@ -27,6 +27,9 @@ export class Gateway {
   private reloadError: string | null = null;
   private overrides: Partial<Deps>;
 
+  /** Passed to loadConfig on reload (tests inject a fake omp runtime). */
+  loadOpts: Parameters<typeof loadConfig>[1] = {};
+
   constructor(cfg: Config, overrides: Partial<Deps> = {}) {
     this.cfg = cfg;
     this.keys = new KeyStore(() => this.cfg);
@@ -36,12 +39,15 @@ export class Gateway {
   /** Re-reads the config when any of its files changes (ours, and omp's when imported); a broken edit keeps the last good config. */
   watch(intervalMs = 2000) {
     let stamp = sourcesStamp(this.cfg.sources);
-    this.watcher = setInterval(() => {
+    let busy = false;
+    this.watcher = setInterval(async () => {
+      if (busy) return;
       const now = sourcesStamp(this.cfg.sources);
       if (now === stamp) return;
       stamp = now;
+      busy = true;
       try {
-        const next = loadConfig(this.cfg.path);
+        const next = await loadConfig(this.cfg.path, this.loadOpts);
         if (next.gateway.socket !== this.cfg.gateway.socket) console.log(`config: gateway.socket changed; restart the gateway to move it`);
         this.cfg = next;
         stamp = sourcesStamp(next.sources);
@@ -51,7 +57,7 @@ export class Gateway {
       } catch (e) {
         this.reloadError = (e as Error).message;
         console.error(`config: reload failed, keeping the previous config:\n${this.reloadError}`);
-      }
+      } finally { busy = false; }
     }, intervalMs);
   }
   stop() { if (this.watcher) clearInterval(this.watcher); }
@@ -87,6 +93,7 @@ export class Gateway {
         config: this.cfg.path, reloadError: this.reloadError,
         omp: this.cfg.omp?.dir ?? null, warnings: this.cfg.warnings, origins: this.cfg.origins,
         models: Object.keys(this.cfg.models),
+        ompProviders: this.cfg.ompProviders,
         chains: Object.fromEntries(Object.entries(this.cfg.chains).map(([k, v]) => [k, v.map(t => t.ref)])),
         cooldowns: this.cooldowns.list(),
         recent: this.recent.slice(-20),
@@ -141,7 +148,7 @@ export class Gateway {
 
     if (!canon.stream) return this.nonStreaming(canon, deps, signal, entry, finish);
 
-    const result = await runChain(canon, deps, signal, entry.attempts, started);
+    const result = await runChain(canon, deps, signal, entry.attempts, started, entry.agentId);
     if (result.kind !== "stream") return this.notStreamed(result, finish);
     entry.servedBy = result.target.model.id;
     entry.level = result.level;
@@ -166,7 +173,7 @@ export class Gateway {
     const enc = new TextEncoder();
     const cfg = this.cfg;
     const model = c.target.model;
-    const idleMs = model.timeouts.streamIdleTimeoutSeconds * 1000;
+    const idleMs = ("timeouts" in model ? model.timeouts : cfg.timeouts).streamIdleTimeoutSeconds * 1000;
     const pingMs = cfg.gateway.pingIntervalSeconds * 1000;
     const keys = this.keys;
     let usage: Usage | undefined, stopReason: string | undefined;
@@ -235,12 +242,13 @@ export class Gateway {
 
   /** stream:false — nothing reaches the client until the end, so a mid-stream failure can still walk the chain. */
   private async nonStreaming(canon: ReturnType<typeof normalize>, deps: Deps, signal: AbortSignal, entry: Entry, finish: (s: number, o: string, x?: Partial<Entry>) => void): Promise<Response> {
-    const chainLen = deps.cfg.chains[canon.model]?.length ?? 1;
+    const chainLen = chainFor(deps.cfg, canon.model)?.length ?? 1;
     for (let round = 0; round < chainLen; round++) {
-      const result = await runChain(canon, deps, signal, entry.attempts, Date.parse(entry.ts));
+      const result = await runChain(canon, deps, signal, entry.attempts, Date.parse(entry.ts), entry.agentId);
       if (result.kind !== "stream") return this.notStreamed(result, finish);
       try {
-        const msg = await aggregate(result, result.target.model.timeouts.streamIdleTimeoutSeconds * 1000);
+        const tm = "timeouts" in result.target.model ? result.target.model.timeouts : deps.cfg.timeouts;
+        const msg = await aggregate(result, tm.streamIdleTimeoutSeconds * 1000);
         finish(200, "ok", { servedBy: result.target.model.id, level: result.level, usage: msg.usage, stopReason: msg.stop_reason });
         return Response.json(msg, { headers: { "x-subagent-models-served-by": result.target.model.id } });
       } catch (e) {
@@ -312,7 +320,7 @@ export function errorResponse(status: number, type: string, message: string): Re
 
 export async function main(configPath?: string) {
   let cfg: Config;
-  try { cfg = loadConfig(configPath); }
+  try { cfg = await loadConfig(configPath); }
   catch (e) { console.error(e instanceof ConfigError ? e.message : String(e)); process.exit(78); }
   const gw = new Gateway(cfg);
   gw.watch();

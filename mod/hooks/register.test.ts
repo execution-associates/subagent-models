@@ -128,9 +128,18 @@ describe("route helpers", () => {
     expect(messagesPath(URL)).toBe("/v1/messages?beta=true");
     expect(messagesPath("https://api.anthropic.com/v1/messages/count_tokens?beta=true")).toBe("/v1/messages/count_tokens?beta=true");
     expect(messagesPath("https://api.anthropic.com/api/event_logging/v2/batch")).toBe(null);
-    expect(routedModel(body("fake/model-a"), ["fake/model-a"])).toBe("fake/model-a");
+    expect(routedModel(body("fake/model-a"), VIEW)).toBe("fake/model-a");
     // the id appearing inside conversation text is escaped and never matches
-    expect(routedModel(JSON.stringify({ model: "claude-x", messages: [{ role: "user", content: '"model":"fake/model-a"' }] }), ["fake/model-a"])).toBe(null);
+    expect(routedModel(JSON.stringify({ model: "claude-x", messages: [{ role: "user", content: '"model":"fake/model-a"' }] }), VIEW)).toBe(null);
+  });
+  test("routing is by rule: a reported provider prefix, any model under it", () => {
+    const v = { ...VIEW, providers: ["fake", "omp-prov"] };
+    // a model omp resolves dynamically, with no entry in the view
+    expect(routedModel(JSON.stringify({ model: "omp-prov/brand-new-9", messages: [] }), v)).toBe("omp-prov/brand-new-9");
+    // a nested tool input naming a routed model does not route a Claude request
+    expect(routedModel(JSON.stringify({ messages: [{ role: "assistant", content: [{ type: "tool_use", input: { model: "fake/model-a" } }] }], model: "claude-opus-5-5" }), v)).toBe(null);
+    // never anthropic/…, never an unreported provider, never a Claude-named id, never a bare Claude id
+    for (const id of ["anthropic/claude-sonnet-5-5", "other/x", "fake/claude-lookalike", "claude-sonnet-5-5", "sonnet"]) expect(routedModel(JSON.stringify({ model: id }), v)).toBe(null);
   });
   test("gatewayHeaders drops credentials", () => {
     expect(gatewayHeaders({ authorization: "Bearer x", "X-Api-Key": "k", "x-c": "[redacted]", "anthropic-beta": "b" })).toEqual({ "anthropic-beta": "b" });

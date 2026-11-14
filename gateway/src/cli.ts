@@ -5,6 +5,7 @@
 //   mod-config [--config FILE]   the config as the Claude Code mod reads it (JSON, no keys)
 //   status [--config FILE]       ask the running gateway for models, chains, cooldowns, recent requests
 //   key-check PROVIDER           resolve a provider's key and say whether it worked (never prints it)
+//   omp-find PROVIDER/MODEL      how omp resolves an id, and whether it routes here (omp-native mode)
 import { ConfigError, defaultConfigPath, loadConfig, modView } from "./config";
 import { KeyStore } from "./keys";
 import { main } from "./server";
@@ -14,8 +15,8 @@ const cmd = args[0] ?? "help";
 const ci = args.indexOf("--config");
 const configPath = ci >= 0 ? args[ci + 1]! : defaultConfigPath();
 
-function load() {
-  try { return loadConfig(configPath); }
+async function load() {
+  try { return await loadConfig(configPath); }
   catch (e) {
     if (e instanceof ConfigError) { console.error(e.message); process.exit(78); }
     throw e;
@@ -27,13 +28,15 @@ switch (cmd) {
     await main(configPath);
     break;
   case "check": {
-    const c = load();
+    const c = await load();
     const o = (k: string) => `[${c.origins[k] ?? "ours"}]`;
     console.log(`ok: ${c.path}`);
     console.log(`socket: ${c.gateway.socket}`);
-    console.log(c.omp ? `omp: importing from ${c.omp.dir} (providers: ${c.omp.providers.join(", ") || "none"}; fallbackChains: ${c.omp.fallbackChains}; timeouts: ${c.omp.timeouts}; agents: ${c.omp.agents.join(", ") || "none"})` : "omp: off (no omp block)");
+    console.log(c.omp ? `omp: native via SDK ${c.ompRuntime!.version} from ${c.omp.dir}; ${c.ompProviders.length} providers route (${c.omp.providers ? "restricted" : "all but anthropic"}); fallbackChains: ${c.omp.fallbackChains}; agents: ${c.omp.agents.join(", ") || "none"}` : "omp: off (no omp block)");
+    if (c.omp) console.log(`omp providers: ${c.ompProviders.join(", ")}`);
     for (const p of Object.keys(c.providers)) console.log(`provider ${p} ${o(`provider ${p}`)}: ${c.providers[p]!.api} ${c.providers[p]!.baseUrl}`);
     for (const [id, chain] of Object.entries(c.chains)) console.log(`model ${id} ${o(`model ${id}`)}: ${chain.map(t => t.ref).join(" -> ")}${chain.length > 1 ? ` (chain ${o(`chain ${id}`)})` : ""}`);
+    for (const [id, m] of Object.entries(c.ompModels)) if (m.subscription) console.log(`note: ${id} is served by a subscription login in omp`);
     const t = c.timeouts;
     console.log(`timeouts: firstEvent ${t.streamFirstEventTimeoutSeconds}s ${o("timeouts.streamFirstEventTimeoutSeconds")}, idle ${t.streamIdleTimeoutSeconds}s ${o("timeouts.streamIdleTimeoutSeconds")}, total ${t.totalTimeoutSeconds || "off"}`);
     console.log(`retry: maxRetries ${c.retry.maxRetries} ${o("retry.maxRetries")}, rateLimitWalksChain ${c.retry.rateLimitWalksChain} ${o("retry.rateLimitWalksChain")}, cooldown ${c.retry.cooldownSeconds}s`);
@@ -42,12 +45,12 @@ switch (cmd) {
     break;
   }
   case "mod-config": {
-    try { console.log(JSON.stringify({ ok: true, config: modView(loadConfig(configPath)) })); }
+    try { console.log(JSON.stringify({ ok: true, config: modView(await loadConfig(configPath)) })); }
     catch (e) { console.log(JSON.stringify({ ok: false, error: (e as Error).message })); }
     break;
   }
   case "status": {
-    const c = load();
+    const c = await load();
     try {
       const r = await fetch("http://gateway/status", { unix: c.gateway.socket } as RequestInit);
       console.log(JSON.stringify(await r.json(), null, 2));
@@ -57,8 +60,16 @@ switch (cmd) {
     }
     break;
   }
+  case "omp-find": {
+    const c = await load();
+    const id = args[1] ?? "";
+    const slash = id.indexOf("/");
+    const m = c.ompRuntime && slash > 0 ? c.ompRuntime.find(id.slice(0, slash), id.slice(slash + 1)) : undefined;
+    console.log(m ? JSON.stringify({ ...m, routes: c.ompProviders.includes(m.provider) }) : `omp resolves no model ${id}`);
+    break;
+  }
   case "key-check": {
-    const c = load();
+    const c = await load();
     const p = c.providers[args[1] ?? ""];
     if (!p) { console.error(`no provider ${args[1]} (providers: ${Object.keys(c.providers).join(", ")})`); process.exit(2); }
     try {
@@ -70,3 +81,6 @@ switch (cmd) {
   default:
     console.log("usage: cli.ts serve|check|mod-config|status|key-check PROVIDER [--config FILE]");
 }
+
+// omp's SDK keeps timers and database handles open; a one-shot command ends here.
+if (cmd !== "serve") process.exit(process.exitCode ?? 0);

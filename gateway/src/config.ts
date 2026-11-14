@@ -3,7 +3,8 @@
 // can fix it from the message alone.
 import { homedir } from "node:os";
 import { readFileSync, statSync } from "node:fs";
-import { type OmpBlock, type Origin, type Source, OmpError, importOmp, mergeOver, readOmpBlock } from "./omp";
+import { type OmpBlock, type OmpWarning, type Origin, type Source, OmpError, importOmp, mergeOver, ompResolves, readOmpBlock, routableProviders } from "./omp";
+import { type OmpModelInfo, type OmpRuntime, OmpRuntimeError, loadOmpRuntime } from "./omp-runtime";
 
 export const LEVELS = ["off", "minimal", "low", "medium", "high", "xhigh", "max"] as const;
 export type Level = (typeof LEVELS)[number];
@@ -74,7 +75,11 @@ export type ProviderDef = {
 /** One entry of a chain: a configured model or a Claude model, with an optional level. */
 export type Target =
   | { kind: "model"; ref: string; model: ModelDef; level: Level | null }
+  | { kind: "omp"; ref: string; model: OmpModelInfo; level: Level | null }
   | { kind: "claude"; ref: string; claudeModel: string; level: Level | null };
+
+/** What validate() needs to resolve ids through omp (omp-native mode). */
+export type OmpExt = { runtime: OmpRuntime; providers: Set<string> };
 
 export type AgentDef = {
   name: string;
@@ -114,6 +119,11 @@ export type Config = {
   warnings: string[];
   /** Every file this config was built from (ours first), for hot reload. */
   sources: Source[];
+  /** omp-native mode: the runtime, and the provider names whose ids route to it. */
+  ompRuntime: OmpRuntime | null;
+  ompProviders: string[];
+  /** omp models the config names (agents, chains), resolved. */
+  ompModels: Record<string, OmpModelInfo>;
 };
 
 export class ConfigError extends Error {
@@ -268,7 +278,7 @@ function compat(v: unknown, at: string, api: Api, problems: P, bo: OpenAICompat,
 const ID_OK = /^[A-Za-z0-9._\-\/]+$/;
 
 /** Validates a parsed YAML document. Pure: no file system, no network. */
-export function validate(doc: unknown, file = "config.yml", mtimeMs = 0): Config {
+export function validate(doc: unknown, file = "config.yml", mtimeMs = 0, omp?: OmpExt): Config {
   const problems: P = [];
   if (!isObj(doc)) throw new ConfigError(["the file must be a YAML map at the top level"], file);
   known(doc, ["gateway", "secrets", "timeouts", "retry", "providers", "agents", "omp"], "(top level)", problems);
@@ -305,7 +315,10 @@ export function validate(doc: unknown, file = "config.yml", mtimeMs = 0): Config
 
   const providers: Record<string, ProviderDef> = {};
   const models: Record<string, ModelDef> = {};
-  if (!isObj(doc.providers)) problems.push("providers: required, a map of provider name -> provider");
+  if (!isObj(doc.providers)) {
+    if (!omp) problems.push("providers: required, a map of provider name -> provider (or an omp: block)");
+    else if (doc.providers !== undefined && doc.providers !== null) problems.push("providers: must be a map");
+  }
   else for (const [pname, pv] of Object.entries(doc.providers)) {
     const at = `providers.${pname}`;
     if (pname === CLAUDE_PROVIDER) { problems.push(`${at}: "${CLAUDE_PROVIDER}" is reserved for real Claude models (served with the session's own login); use it only in fallback chains, as ${CLAUDE_PROVIDER}/<claude-model-id>`); continue; }
@@ -352,6 +365,14 @@ export function validate(doc: unknown, file = "config.yml", mtimeMs = 0): Config
     }
   }
 
+  const ompModels: Record<string, OmpModelInfo> = {};
+  const ompModel = (id: string): OmpModelInfo | undefined => {
+    if (!omp || !ompResolves(id, omp.providers, omp.runtime)) return undefined;
+    const slash = id.indexOf("/");
+    const m = omp.runtime.find(id.slice(0, slash), id.slice(slash + 1));
+    if (m) ompModels[id] = m;
+    return m;
+  };
   const target = (ref: unknown, at: string): Target | null => {
     if (typeof ref !== "string") { problems.push(`${at}: must be a string like provider/model or provider/model:high`); return null; }
     const { id, level } = parseRef(ref);
@@ -361,8 +382,11 @@ export function validate(doc: unknown, file = "config.yml", mtimeMs = 0): Config
       return { kind: "claude", ref, claudeModel, level };
     }
     const model = models[id];
-    if (!model) { problems.push(`${at}: ${ref}: no such model (configured: ${Object.keys(models).join(", ") || "none"})`); return null; }
-    return { kind: "model", ref, model, level };
+    if (model) return { kind: "model", ref, model, level };
+    const om = ompModel(id);
+    if (om) return { kind: "omp", ref, model: om, level };
+    problems.push(`${at}: ${ref}: no such model (configured: ${Object.keys(models).join(", ") || "none"}${omp ? "; and omp resolves no such model" : ""})`);
+    return null;
   };
 
   const chains: Record<string, Target[]> = {};
@@ -372,12 +396,14 @@ export function validate(doc: unknown, file = "config.yml", mtimeMs = 0): Config
     else for (const [ref, list] of Object.entries(r.fallbackChains)) {
       const at = `retry.fallbackChains.${ref}`;
       const { id, level } = parseRef(ref);
-      if (!models[id]) { problems.push(`${at}: no such model ${id} (a chain is keyed by a configured model id)`); continue; }
+      const head = models[id] ? { kind: "model" as const, ref: id, model: models[id]!, level: null } : ompModel(id) ? { kind: "omp" as const, ref: id, model: ompModel(id)!, level: null } : null;
+      if (!head) { problems.push(`${at}: no such model ${id} (a chain is keyed by a model id${omp ? " this file or omp resolves" : " configured here"})`); continue; }
+      chains[id] ??= [head];
       if (level) problems.push(`${at}: the chain key takes no level; put levels on the entries`);
       if (!Array.isArray(list)) { problems.push(`${at}: must be a list`); continue; }
       list.forEach((e, i) => { const t = target(e, `${at}[${i}]`); if (t) chains[id]!.push(t); });
       const seen = new Set<string>();
-      for (const t of chains[id]!) { const k = t.kind === "model" ? t.model.id : `claude:${t.claudeModel}`; if (seen.has(k)) problems.push(`${at}: ${t.ref} appears twice in the chain`); seen.add(k); }
+      for (const t of chains[id]!) { const k = t.kind === "claude" ? `claude:${t.claudeModel}` : t.model.id; if (seen.has(k)) problems.push(`${at}: ${t.ref} appears twice in the chain`); seen.add(k); }
     }
   }
 
@@ -391,7 +417,7 @@ export function validate(doc: unknown, file = "config.yml", mtimeMs = 0): Config
       const { model: mref, description, prompt, effort, ...extra } = av;
       if (typeof mref !== "string") { problems.push(`${at}.model: required, a configured model id (optionally with :level)`); continue; }
       const { id, level } = parseRef(mref);
-      if (!models[id]) { problems.push(`${at}.model: ${mref}: no such model (configured: ${Object.keys(models).join(", ")})`); continue; }
+      if (!models[id] && !ompModel(id)) { problems.push(`${at}.model: ${mref}: no such model (configured: ${Object.keys(models).join(", ")}${omp ? "; and omp resolves no such model" : ""})`); continue; }
       if (typeof description !== "string" || !description.trim()) problems.push(`${at}.description: required (the line the main agent reads when choosing an agent)`);
       if (prompt !== undefined && typeof prompt !== "string") problems.push(`${at}.prompt: must be a string`);
       const eff = effort === undefined ? null : oneOf(effort, LEVELS, `${at}.effort`, problems, "high");
@@ -401,31 +427,61 @@ export function validate(doc: unknown, file = "config.yml", mtimeMs = 0): Config
   }
 
   if (problems.length) throw new ConfigError(problems, file);
-  return { path: file, mtimeMs, gateway, secrets, timeouts: globalTimeouts, retry, providers, models, chains, agents, omp: null, origins: {}, warnings: [], sources: [{ path: file, mtimeMs }] };
+  return { path: file, mtimeMs, gateway, secrets, timeouts: globalTimeouts, retry, providers, models, chains, agents, omp: null, origins: {}, warnings: [], sources: [{ path: file, mtimeMs }], ompRuntime: null, ompProviders: [], ompModels };
 }
 
+export type ResolveOptions = {
+  /** Loads omp's runtime (tests pass a fake). Default: the SDK in gateway/omp-sdk. */
+  loadRuntime?: (block: OmpBlock, warn: (m: string) => void) => Promise<OmpRuntime>;
+};
+
 /**
- * Our parsed document, with an `omp:` block resolved: the omp files are read, turned
- * into our shape, our document laid over them, and the result validated. Without
- * the block this is validate() alone and no omp file is looked at.
+ * Our parsed document, resolved. With an `omp:` block, omp's runtime (its model
+ * registry and auth) is loaded, omp's chains and opt-in agents are imported, our
+ * document is laid over them, and ids are resolved through omp too. Without the
+ * block this is validate() alone: no omp file or package is touched.
  */
-export function resolve(doc: unknown, file = "config.yml", mtimeMs = 0): Config {
+export async function resolve(doc: unknown, file = "config.yml", mtimeMs = 0, opts: ResolveOptions = {}): Promise<Config> {
   if (!isObj(doc) || doc.omp === undefined || doc.omp === null) {
     const c = validate(doc, file, mtimeMs);
     for (const id of Object.keys(c.models)) c.origins[`model ${id}`] = "ours";
     return c;
   }
   const problems: P = [];
-  const block = readOmpBlock(doc.omp, problems);
+  const warn: OmpWarning[] = [];
+  const block = readOmpBlock(doc.omp, problems, warn);
   if (problems.length || !block) throw new ConfigError(problems, file);
+  const rtWarnings: string[] = [];
+  let runtime: OmpRuntime;
+  try { runtime = await (opts.loadRuntime ?? ((b, w) => loadOmpRuntime(b.dir, b.versionCheck, w)))(block, m => rtWarnings.push(m)); }
+  catch (e) { if (e instanceof OmpRuntimeError) throw new ConfigError([e.message], file); throw e; }
+  let d: Record<string, any> = doc;
+  // A provider entry with neither baseUrl nor models only tweaked omp's (compat);
+  // omp's transport serves that provider now, so the entry is set aside.
+  if (isObj(d.providers)) {
+    const kept: Record<string, unknown> = {};
+    for (const [p, pv] of Object.entries(d.providers)) {
+      if (isObj(pv) && pv.baseUrl === undefined && pv.models === undefined && runtime.providers().includes(p)) warn.push({ text: `providers.${p} is ignored: it defines no baseUrl or models, and omp serves ${p} with its own settings` });
+      else kept[p] = pv;
+    }
+    d = { ...d, providers: kept };
+  }
+  // Our own providers shadow omp's of the same name entirely.
+  const ours = new Set(isObj(d.providers) ? Object.keys(d.providers) : []);
+  const providers = routableProviders(block, runtime, warn).filter(p => !ours.has(p));
+  const ourModelIds = new Set<string>();
+  if (isObj(d.providers)) for (const [p, pv] of Object.entries(d.providers)) if (isObj(pv) && isObj(pv.models)) for (const k of Object.keys(pv.models)) ourModelIds.add(`${p}/${k}`);
   let imported;
-  try { imported = importOmp(block); }
+  try { imported = importOmp(block, runtime, new Set(providers), ourModelIds); }
   catch (e) { if (e instanceof OmpError) throw new ConfigError([e.message], file); throw e; }
-  const { merged, origins } = mergeOver(imported.doc, doc);
-  const c = validate(merged, file, mtimeMs);
+  const { merged, origins } = mergeOver(imported.doc, d);
+  const c = validate(merged, file, mtimeMs, { runtime, providers: new Set(providers) });
+  for (const id of Object.keys(c.models)) origins[`model ${id}`] ??= "ours";
+  for (const id of Object.keys(c.ompModels)) origins[`model ${id}`] = "omp";
+  for (const p of ours) if (runtime.providers().includes(p)) origins[`provider ${p}`] = "ours over omp";
   // A warning about an omp chain or agent our own file replaces is noise: drop it.
-  const warnings = imported.warnings.filter(w => !w.about || !origins[w.about] || origins[w.about] === "omp").map(w => w.text);
-  return { ...c, omp: block, origins, warnings, sources: [{ path: file, mtimeMs }, ...imported.sources] };
+  const warnings = [...rtWarnings, ...[...warn, ...imported.warnings].filter(w => !w.about || !origins[w.about] || origins[w.about] === "omp").map(w => w.text)];
+  return { ...c, omp: block, origins, warnings, sources: [{ path: file, mtimeMs }, ...imported.sources], ompRuntime: runtime, ompProviders: providers };
 }
 
 /** A string that changes when any source file changes (or appears, or goes). */
@@ -441,7 +497,7 @@ export function parseYaml(text: string, file: string): unknown {
   }
 }
 
-export function loadConfig(file = defaultConfigPath()): Config {
+export async function loadConfig(file = defaultConfigPath(), opts: ResolveOptions = {}): Promise<Config> {
   let text: string, mtimeMs: number;
   try {
     text = readFileSync(file, "utf8");
@@ -449,7 +505,7 @@ export function loadConfig(file = defaultConfigPath()): Config {
   } catch (e) {
     throw new ConfigError([`cannot read the file: ${(e as Error).message}. Copy config.example.yml there to start`], file);
   }
-  return resolve(parseYaml(text, file), file, mtimeMs);
+  return resolve(parseYaml(text, file), file, mtimeMs, opts);
 }
 
 /** What the mod needs, as plain JSON (no keys: apiKey sources are not included). */
@@ -458,7 +514,9 @@ export function modView(c: Config) {
     path: c.path,
     mtimeMs: c.mtimeMs,
     socket: c.gateway.socket,
-    models: Object.fromEntries(Object.values(c.models).map(m => [m.id, { name: m.name, contextWindow: m.contextWindow, maxTokens: m.maxTokens, input: m.input }])),
+    models: Object.fromEntries([...Object.values(c.models), ...Object.values(c.ompModels)].map(m => [m.id, { name: m.name, contextWindow: m.contextWindow, maxTokens: m.maxTokens, input: m.input }])),
+    /** Provider names whose `<provider>/<model>` ids route to the gateway: ours, then omp's. */
+    providers: [...Object.keys(c.providers), ...c.ompProviders],
     /** Routed id -> Claude models its chain may hand back to the session. */
     claudeFallbacks: Object.fromEntries(Object.entries(c.chains).map(([id, ts]) => [id, ts.filter(t => t.kind === "claude").map(t => (t as { claudeModel: string }).claudeModel)])),
     agents: c.agents.map(a => ({ name: a.name, model: a.model, effort: a.effort, description: a.description, prompt: a.prompt, extra: a.extra })),

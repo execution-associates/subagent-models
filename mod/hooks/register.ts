@@ -27,9 +27,9 @@ async function readConfig($: EngineInterface, path: string): Promise<{ ok: true;
   const bun = (await $.env.get("SUBAGENT_MODELS_BUN")) || "bun";
   let r;
   try {
-    r = await $.process.run([bun, cli, "mod-config", "--config", path], { timeoutMs: 20_000 });
+    r = await $.process.run([bun, cli, "mod-config", "--config", path], { timeoutMs: 60_000 });
   } catch {
-    r = await $.process.run(["sh", "-lc", 'exec bun "$0" mod-config --config "$1"', cli, path], { timeoutMs: 20_000 });
+    r = await $.process.run(["sh", "-lc", 'exec bun "$0" mod-config --config "$1"', cli, path], { timeoutMs: 60_000 });
   }
   try { return JSON.parse(r.stdout.trim().split("\n").pop() ?? ""); }
   catch { return { ok: false, error: `cannot run ${cli} (exit ${r.exitCode}): ${r.stderr.slice(0, 300)}` }; }
@@ -104,7 +104,7 @@ export const register: Register = on => {
     // The hook failed. A request of ours must not slip through to Anthropic as is.
     if (next.called) return next(e);
     const body = e.init?.body;
-    const ours = view && typeof body === "string" && messagesPath(e.url) && routedModel(body, Object.keys(view.models));
+    const ours = view && typeof body === "string" && messagesPath(e.url) && routedModel(body, view);
     return ours ? errorValue(503, `subagent-models: the routing hook failed for ${ours}; nothing was sent to Claude. Run claude --debug for the reason`) : next(e);
   });
 };

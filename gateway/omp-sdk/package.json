@@ -1,0 +1,9 @@
+{
+  "name": "subagent-models-omp-sdk",
+  "private": true,
+  "description": "Optional: omp's own model registry, auth and transports, loaded by the gateway only when the config has an omp: block. Pin to the installed omp version.",
+  "dependencies": {
+    "@oh-my-pi/pi-ai": "18.20.0",
+    "@oh-my-pi/pi-coding-agent": "18.20.0"
+  }
+}

@@ -29,18 +29,16 @@ secrets:
   # Keys stay in the gateway's memory this long, then are fetched again (a 401 refetches at once).
   keyCacheSeconds: 3600
 
-# omp compatibility (optional). With this block, providers, models, fallback chains
-# and agents are imported read-only from omp's own files (models.yml, config.yml,
-# agents/<name>.md), and everything in this file is laid over them key by key: a
-# provider's or model's field, a chain, an agent, a timeout defined here wins.
-# Without the block no omp file is read. `check` shows each item's origin.
+# omp-native mode (optional; needs scripts/install-omp-sdk.sh). With this block,
+# every model omp can call routes here as <provider>/<model>, using omp's own model
+# registry, logins and transport; omp's fallback chains are imported, and anything
+# defined in this file wins key by key. Without the block nothing of omp is loaded.
 # omp:
 #   dir: ~/.omp/agent
-#   providers: [refuseless]        # omp providers to import, by name (none by default)
-#   # models: [refuseless/deepseek-v4.1-flash-fast]   # optional: import only these
-#   fallbackChains: true           # retry.fallbackChains, maxRetries, rateLimitWalksChain
-#   timeouts: false                # providers.stream*TimeoutSeconds (global in omp!)
-#   agents: []                     # omp agents/<name>.md to expose, by name (none by default)
+#   # providers: [refuseless, deepseek]   # optional restriction (default: all but anthropic)
+#   fallbackChains: true                  # omp's retry.fallbackChains, maxRetries, rateLimitWalksChain
+#   agents: []                            # omp agents/<name>.md to expose, by name
+#   versionCheck: exact                   # the SDK must match the installed omp (or: warn)
 
 # Defaults for every model; a provider or a model can override them under `timeouts:`.
 timeouts:

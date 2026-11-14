@@ -1,187 +1,248 @@
-// omp compatibility mode: import from fixture copies of omp's three file shapes.
+// omp-native mode, against a fake omp runtime (registry + transport) and fixture
+// copies of omp's config.yml and agents/*.md.
 import { afterAll, describe, expect, test } from "bun:test";
 import { cpSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { ConfigError, loadConfig, parseYaml, resolve, validate } from "../src/config";
 import { parseAgentFile } from "../src/omp";
+import { OmpStream, classifyOmpError, toOmpContext } from "../src/omp-transport";
+import { makeSignature, normalize, readSignature } from "../src/canonical";
+import { Gateway, FALLBACK_HEADER } from "../src/server";
+import { FakeOmp, fail, hang, msg, ok } from "./fake-omp";
+import { engineRequest } from "./fixtures";
 
 const FIX = `${import.meta.dir}/omp-fixture`;
 const tmp = mkdtempSync(`${tmpdir()}/smg-omp-`);
 afterAll(() => rmSync(tmp, { recursive: true, force: true }));
 
-const problems = (doc: unknown): string[] => {
-  try { resolve(doc, "ours.yml"); return []; } catch (e) { if (e instanceof ConfigError) return e.problems; throw e; }
+const fake = () => new FakeOmp([
+  { provider: "acme", modelId: "fast-1", name: "Acme Fast 1" },
+  { provider: "acme", modelId: "slow-2", name: "Acme Slow 2", reasoning: false },
+  { provider: "deepseek", modelId: "deepseek-v4-flash", name: "DeepSeek V4 Flash" },
+  { provider: "other", modelId: "o-1" },
+  { provider: "openai-codex", modelId: "gpt-x", subscription: true },
+  { provider: "anthropic", modelId: "claude-sonnet-5-5" },
+]);
+const opts = (rt: FakeOmp) => ({ loadRuntime: async () => rt });
+const omp = (over: Record<string, unknown> = {}) => ({ dir: FIX, ...over });
+const problems = async (doc: unknown, rt = fake()): Promise<string[]> => {
+  try { await resolve(doc, "ours.yml", 0, opts(rt)); return []; } catch (e) { if (e instanceof ConfigError) return e.problems; throw e; }
 };
-const omp = (over: Record<string, unknown> = {}) => ({ dir: FIX, providers: ["acme"], ...over });
 
 describe("omp block absent", () => {
-  test("resolve() is validate() exactly: no omp file is looked at", () => {
+  test("resolve() is validate() exactly, and no runtime is loaded", async () => {
     const example = parseYaml(readFileSync(`${import.meta.dir}/../../config.example.yml`, "utf8"), "x");
+    let loaded = false;
+    const b = await resolve(example, "x", 0, { loadRuntime: async () => { loaded = true; return fake(); } });
     const a = validate(example, "x");
-    const b = resolve(example, "x");
     expect({ ...b, origins: {} }).toEqual({ ...a, origins: {} });
-    expect(b.omp).toBe(null);
+    expect(loaded).toBe(false);
+    expect(b.ompRuntime).toBe(null);
     expect(b.sources.map(s => s.path)).toEqual(["x"]);
-    expect(b.warnings).toEqual([]);
   });
 });
 
-describe("import", () => {
-  const c = resolve({ omp: omp({ providers: ["acme", "other", "weird", "missing"], agents: ["worker", "probe", "ghost"] }) }, "ours.yml");
-
-  test("providers in the allow-list and models.yml are imported, in our id scheme", () => {
-    expect(Object.keys(c.models).sort()).toEqual(["acme/fast-1", "acme/slow-2", "other/o-1"]);
-    const m = c.models["acme/fast-1"]!;
-    expect(m).toMatchObject({ name: "Acme Fast 1", upstreamId: "fast-1", input: ["text", "image"], contextWindow: 1048576, maxTokens: 262144 });
-    expect(m.openai.reasoningEffortMap.medium).toBe("high");
-    expect(c.providers.acme!.apiKey).toBe("!printf placeholder-not-a-key");
-    expect(c.origins["model acme/fast-1"]).toBe("omp");
+describe("routing and resolution", () => {
+  test("every omp provider routes except anthropic; providers: restricts", async () => {
+    const c = await resolve({ omp: omp() }, "ours.yml", 0, opts(fake()));
+    expect(c.ompProviders).toEqual(["acme", "deepseek", "openai-codex", "other"]);
+    const r = await resolve({ omp: omp({ providers: ["acme", "nope"] }) }, "ours.yml", 0, opts(fake()));
+    expect(r.ompProviders).toEqual(["acme"]);
+    expect(r.warnings).toContain("omp.providers: omp has no provider nope");
   });
 
-  test("chains: unroutable entries are skipped with a warning, Claude entries kept as the hand-back", () => {
-    expect(c.chains["acme/fast-1"]!.map(t => t.ref)).toEqual(["acme/fast-1", "acme/slow-2:high", "other/o-1", "anthropic/claude-sonnet-5-5:medium"]);
-    expect(c.chains["acme/fast-1"]![3]!.kind).toBe("claude");
-    expect(c.warnings).toContain("omp chain acme/fast-1: entry deepseek/deepseek-v4-flash:high is not an imported model (an omp built-in provider, a provider not in omp.providers, or a model left out by omp.models); skipped");
+  test("omp's chains resolve through the registry, built-in providers included; unresolvable entries are warnings", async () => {
+    const c = await resolve({ omp: omp({ providers: ["acme", "deepseek"] }) }, "ours.yml", 0, opts(fake()));
+    expect(c.chains["acme/fast-1"]!.map(t => `${t.kind}:${t.ref}`)).toEqual(["omp:acme/fast-1", "omp:deepseek/deepseek-v4-flash:high", "omp:acme/slow-2:high", "claude:anthropic/claude-sonnet-5-5:medium"]);
+    expect(c.warnings).toContain("omp chain acme/fast-1: entry other/o-1 does not resolve here (no such omp model, or its provider is restricted); skipped");
+    expect(c.warnings).toContain("omp chain other/o-1: other/o-1 does not resolve here; chain skipped");
     expect(c.retry).toMatchObject({ maxRetries: 4, rateLimitWalksChain: false });
+    expect(c.origins["chain acme/fast-1"]).toBe("omp");
   });
 
-  test("skipped providers, models and agents each get a warning, never an error", () => {
-    const w = c.warnings.join("\n");
-    expect(w).toContain("omp provider weird: api \"openai-codex-responses\" is not one this gateway speaks; skipped");
-    expect(w).toContain("omp.providers: missing is not defined in");
-    expect(w).toContain("omp model acme/claude-lookalike: contains a Claude model name");
-    expect(w).toContain("omp agent probe: model \"anthropic/claude-sonnet-5-5:high\" is not an imported model; skipped");
-    expect(w).toContain("omp.agents:");
-    expect(w).toContain("ghost.md not found; skipped");
-  });
-
-  test("agents opt-in by name: frontmatter and prompt body", () => {
+  test("agents: opt-in by name; a Claude-pinned omp agent is skipped", async () => {
+    const c = await resolve({ omp: omp({ agents: ["worker", "probe", "ghost"] }) }, "ours.yml", 0, opts(fake()));
     expect(c.agents.map(a => a.name)).toEqual(["worker"]);
-    expect(c.agents[0]).toMatchObject({ model: "acme/fast-1", effort: "high", description: "General worker pinned to Acme Fast 1.", prompt: "You are a worker subagent. Do exactly the assigned slice." });
-    expect(c.agents[0]!.extra).toEqual({});
+    expect(c.agents[0]).toMatchObject({ model: "acme/fast-1", effort: "high", prompt: "You are a worker subagent. Do exactly the assigned slice." });
+    expect(c.warnings.join("\n")).toContain("omp agent probe: model \"anthropic/claude-sonnet-5-5:high\" does not resolve here; skipped");
+    expect(c.warnings.join("\n")).toContain("ghost.md not found; skipped");
+    expect(c.ompModels["acme/fast-1"]!.name).toBe("Acme Fast 1");
   });
 
-  test("timeouts are not imported by default", () => {
-    expect(c.timeouts.streamFirstEventTimeoutSeconds).toBe(30);
-    expect(c.models["acme/fast-1"]!.timeouts.streamIdleTimeoutSeconds).toBe(90);
-  });
-
-  test("timeouts: true imports the global ones (-1 means omp's default: left alone) and per-model compat", () => {
-    const t = resolve({ omp: omp({ timeouts: true }) }, "ours.yml");
-    expect(t.timeouts.streamFirstEventTimeoutSeconds).toBe(10);
-    expect(t.timeouts.streamIdleTimeoutSeconds).toBe(90);
-    expect(t.models["acme/fast-1"]!.timeouts.streamIdleTimeoutSeconds).toBe(45);
-    expect(t.origins["timeouts.streamFirstEventTimeoutSeconds"]).toBe("omp");
-  });
-
-  test("fallbackChains: false imports no chain or retry setting", () => {
-    const n = resolve({ omp: omp({ fallbackChains: false }) }, "ours.yml");
-    expect(n.chains["acme/fast-1"]!.length).toBe(1);
-    expect(n.retry.maxRetries).toBe(2);
-    expect(n.sources.map(s => s.path)).toEqual(["ours.yml", `${FIX}/models.yml`]);
-  });
-
-  test("omp.models narrows the import", () => {
-    const n = resolve({ omp: omp({ models: ["acme/fast-1", "acme/nope"] }) }, "ours.yml");
-    expect(Object.keys(n.models)).toEqual(["acme/fast-1"]);
-    expect(n.warnings).toContain("omp.models: acme/nope is not a model of an imported provider; skipped");
-  });
-});
-
-describe("precedence: ours over omp, key by key", () => {
-  const c = resolve({
-    omp: omp({ agents: ["worker"], timeouts: true }),
-    timeouts: { streamFirstEventTimeoutSeconds: 30 },
-    retry: { maxRetries: 1, fallbackChains: { "acme/fast-1": ["acme/slow-2"] } },
-    providers: { acme: { compat: { reasoningEffortMap: { off: "off" } }, models: { "fast-1": { name: "Ours Fast", defaultLevel: "low" }, "own-3": { name: "Ours Only" } } } },
-    agents: { worker: { model: "acme/slow-2", description: "ours" } },
-  }, "ours.yml");
-
-  test("a model's fields, a provider compat key, a chain, an agent, a timeout", () => {
-    const m = c.models["acme/fast-1"]!;
-    expect(m.name).toBe("Ours Fast");
-    expect(m.defaultLevel).toBe("low");
-    expect(m.contextWindow).toBe(1048576); // still omp's
-    expect(m.openai.reasoningEffortMap).toMatchObject({ off: "off", medium: "high" }); // ours + omp's
-    expect(c.chains["acme/fast-1"]!.map(t => t.ref)).toEqual(["acme/fast-1", "acme/slow-2"]);
-    expect(c.agents.find(a => a.name === "worker")!.description).toBe("ours");
-    expect(c.timeouts.streamFirstEventTimeoutSeconds).toBe(30);
+  test("ours over omp: a chain, an agent, a retry setting; our own provider shadows omp's", async () => {
+    const c = await resolve({
+      omp: omp({ agents: ["worker"] }),
+      retry: { maxRetries: 1, fallbackChains: { "acme/fast-1": ["deepseek/deepseek-v4-flash"] } },
+      agents: { worker: { model: "acme/slow-2", description: "ours" } },
+      providers: { other: { api: "openai-completions", baseUrl: "https://o.test/v1", models: { "o-1": { name: "Ours O1" } } } },
+    }, "ours.yml", 0, opts(fake()));
+    expect(c.chains["acme/fast-1"]!.map(t => t.ref)).toEqual(["acme/fast-1", "deepseek/deepseek-v4-flash"]);
+    expect(c.agents[0]!.description).toBe("ours");
     expect(c.retry.maxRetries).toBe(1);
-    expect(c.retry.rateLimitWalksChain).toBe(false); // still omp's
+    expect(c.ompProviders).not.toContain("other");
+    expect(c.models["other/o-1"]!.name).toBe("Ours O1");
+    expect(c.origins).toMatchObject({ "chain acme/fast-1": "ours over omp", "agent worker": "ours over omp", "retry.maxRetries": "ours over omp", "provider other": "ours over omp", "model other/o-1": "ours" });
   });
 
-  test("origins say which side each item came from", () => {
-    expect(c.origins).toMatchObject({
-      "provider acme": "ours over omp",
-      "model acme/fast-1": "ours over omp",
-      "model acme/slow-2": "omp",
-      "model acme/own-3": "ours",
-      "chain acme/fast-1": "ours over omp",
-      "agent worker": "ours over omp",
-      "retry.maxRetries": "ours over omp",
-      "retry.rateLimitWalksChain": "omp",
-      "timeouts.streamFirstEventTimeoutSeconds": "ours over omp",
-    });
+  test("a compat-only provider entry is set aside with a warning; removed keys are warnings", async () => {
+    const c = await resolve({ omp: omp({ models: ["x"], timeouts: false }), providers: { acme: { compat: { maxTokensField: "max_tokens" } } } }, "ours.yml", 0, opts(fake()));
+    expect(c.ompProviders).toContain("acme");
+    expect(c.warnings).toEqual(expect.arrayContaining([
+      "omp.models is ignored: every model omp can resolve is routable; restrict with omp.providers",
+      "omp.timeouts is ignored: timeouts are always this file's (omp's apply to all its providers at once)",
+      "providers.acme is ignored: it defines no baseUrl or models, and omp serves acme with its own settings",
+    ]));
   });
 
-  test("a warning about an omp chain our file replaces is dropped", () => {
-    expect(c.warnings.some(w => w.startsWith("omp chain acme/fast-1"))).toBe(false);
+  test("errors: an unknown omp model in our own file, Claude-named ids, a bad block", async () => {
+    expect((await problems({ omp: omp(), agents: { a: { model: "acme/nope", description: "d" } } }))[0]).toContain("omp resolves no such model");
+    expect((await problems({ omp: omp(), agents: { a: { model: "anthropic/claude-sonnet-5-5", description: "d" } } }))[0]).toContain("no such model");
+    expect(await problems({ omp: omp({ versionCheck: "loose" }) })).toContain("omp.versionCheck: must be exact or warn");
   });
 
-  test("our own rules still hold for merged models", () => {
-    expect(problems({ omp: omp(), providers: { acme: { models: { "claude-x": {} } } } }).some(p => p.includes("contains a Claude model name"))).toBe(true);
+  test("the runtime failing to load (SDK missing, version skew) is a config error naming the cause", async () => {
+    const e = await resolve({ omp: omp() }, "ours.yml", 0, { loadRuntime: async () => { const { OmpRuntimeError } = await import("../src/omp-runtime"); throw new OmpRuntimeError("omp: the installed omp is 18.21.0 but the gateway's omp SDK is 18.20.0"); } }).catch(x => x);
+    expect(e).toBeInstanceOf(ConfigError);
+    expect(e.problems[0]).toContain("18.21.0");
   });
 });
 
-describe("broken or missing omp files", () => {
-  const copy = () => { const d = mkdtempSync(`${tmp}/d-`); cpSync(FIX, d, { recursive: true }); return d; };
+describe("transport translation", () => {
+  const model = fake().find("acme", "fast-1")!;
+  test("canonical -> pi-ai Context: system, tool results with names, images, own thinking signature back", () => {
+    const req = engineRequest({ model: "acme/fast-1" });
+    (req.messages[2] as any).content[0].signature = makeSignature("acme/fast-1", "sig-up");
+    const ctx = toOmpContext(normalize(req), model);
+    expect(ctx.systemPrompt).toEqual(["You are a Claude agent, built on Anthropic's Claude Agent SDK.", "You are a worker.\n\nNotes."]);
+    expect(ctx.messages.map(m => m.role)).toEqual(["user", "assistant", "toolResult", "toolResult", "user", "assistant", "toolResult"]);
+    expect(ctx.messages[1].content[0]).toEqual({ type: "thinking", thinking: "I will read both.", thinkingSignature: "sig-up" });
+    expect(ctx.messages[1].content.filter((c: any) => c.type === "toolCall").map((c: any) => c.name)).toEqual(["Read", "Read"]);
+    expect(ctx.messages[3]).toMatchObject({ toolCallId: "call_2", toolName: "Read", content: [{ type: "text", text: "an image" }, { type: "image", data: "iVBORw0KGgo=", mimeType: "image/png" }] });
+    expect(ctx.tools.map(t => t.name)).toEqual(["Read", "ToolSearch", "mcp__srv__added", "mcp__srv__deferred_one"]);
+  });
 
-  test("missing models.yml is an error naming the file (the last good config stays)", () => {
-    expect(problems({ omp: omp({ dir: `${tmp}/nowhere` }) })[0]).toMatch(/^omp: cannot read models.yml .*nowhere\/models.yml/);
+  test("events -> Anthropic: thinking with our signature, text, interleaved parallel tool calls as whole blocks, usage", () => {
+    const s = new OmpStream("acme/fast-1", "acme/fast-1", "msg_x");
+    const evs = [
+      { type: "start" }, { type: "thinking_delta", contentIndex: 0, delta: "t" },
+      { type: "thinking_end", contentIndex: 0, content: "t", partial: { content: [{ type: "thinking", thinkingSignature: "s1" }] } },
+      { type: "text_delta", contentIndex: 1, delta: "ok" },
+      { type: "toolcall_start", contentIndex: 2 }, { type: "toolcall_delta", contentIndex: 2, delta: "{" },
+      { type: "toolcall_start", contentIndex: 3 }, { type: "toolcall_delta", contentIndex: 3, delta: "{" },
+      { type: "toolcall_end", contentIndex: 2, toolCall: { id: "c1", name: "Read", arguments: { a: 1 } } },
+      { type: "toolcall_end", contentIndex: 3, toolCall: { id: "c2", name: "Bash", arguments: { b: 2 } } },
+      { type: "done", reason: "toolUse", message: msg() },
+    ].flatMap(e => s.push(e as any));
+    expect(evs.map(e => e.type + ((e as any).delta?.type ? `:${(e as any).delta.type}` : ""))).toEqual([
+      "message_start", "content_block_start", "content_block_delta:thinking_delta", "content_block_delta:signature_delta", "content_block_stop",
+      "content_block_start", "content_block_delta:text_delta", "content_block_stop",
+      "content_block_start", "content_block_delta:input_json_delta", "content_block_stop",
+      "content_block_start", "content_block_delta:input_json_delta", "content_block_stop",
+      "message_delta", "message_stop",
+    ]);
+    expect(readSignature((evs[3] as any).delta.signature)).toEqual({ origin: "acme/fast-1", upstreamSignature: "s1" });
+    expect((evs.at(-2) as any)).toMatchObject({ delta: { stop_reason: "tool_use" }, usage: { input_tokens: 10, output_tokens: 3, cache_read_input_tokens: 4 } });
   });
-  test("unparsable or reshaped models.yml is an error", () => {
-    const d = copy();
-    writeFileSync(`${d}/models.yml`, "providers: [unclosed\n");
-    expect(problems({ omp: omp({ dir: d }) })[0]).toContain("is not valid YAML");
-    writeFileSync(`${d}/models.yml`, "models: []\n");
-    expect(problems({ omp: omp({ dir: d }) })[0]).toContain("has no providers map");
+
+  test("errors classify by status and wording", () => {
+    expect(classifyOmpError({ errorStatus: 429 })).toBe("rate_limit");
+    expect(classifyOmpError({ errorStatus: 401 })).toBe("auth");
+    expect(classifyOmpError({ errorMessage: "No API key found for \"x\"" })).toBe("auth");
+    expect(classifyOmpError({ errorStatus: 400, errorMessage: "maximum context length is 8192 tokens" })).toBe("context_length");
+    expect(classifyOmpError({ errorStatus: 503 })).toBe("server");
+    expect(classifyOmpError({ errorMessage: "fetch failed" })).toBe("server");
   });
-  test("a bad omp block is an error in our file", () => {
-    expect(problems({ omp: { dir: FIX } })).toContain("omp.providers: required, the omp providers to import, by name (nothing is imported by default)");
-    expect(problems({ omp: omp({ everything: true }) })[0]).toMatch(/^omp.everything: unknown key/);
+});
+
+describe("gateway through the omp transport", () => {
+  const gwFor = async (rt: FakeOmp, doc: Record<string, unknown>) => new Gateway(await resolve({ gateway: { accessLog: "/dev/null" }, retry: { maxRetries: 0, baseDelayMs: 1 }, timeouts: { streamFirstEventTimeoutSeconds: 1, streamIdleTimeoutSeconds: 1 }, ...doc }, "ours.yml", 0, opts(rt)), { sleep: async () => {} });
+  const call = (g: Gateway, model: string, signal?: AbortSignal) => g.fetch(new Request("http://gw/v1/messages", { method: "POST", signal, body: JSON.stringify({ model, stream: true, max_tokens: 100, output_config: { effort: "medium" }, messages: [{ role: "user", content: "You are powered by the model x.\nhi" }] }) }));
+  const text = async (r: Response) => (await r.text()).split("\n").filter(l => l.startsWith("data: ")).map(l => JSON.parse(l.slice(6))).filter(e => e.delta?.type === "text_delta").map(e => e.delta.text).join("");
+
+  test("any omp model routes with no configuration, at the request's level, with omp's model name in the identity line", async () => {
+    const rt = fake();
+    const g = await gwFor(rt, { omp: omp({ fallbackChains: false }) });
+    const r = await call(g, "other/o-1");
+    expect(r.status).toBe(200);
+    expect(await text(r)).toBe("hello from other/o-1");
+    expect(rt.calls[0]!.o).toMatchObject({ reasoning: "medium", disableReasoning: false });
+    expect(JSON.stringify(rt.calls[0]!.ctx.messages[0])).toContain("You are powered by the model o-1 (o-1, served by other)");
   });
+
+  test("a failed primary falls back to omp's built-in provider, then hands back to Claude", async () => {
+    const rt = fake();
+    rt.script("acme/fast-1", fail(503, "upstream overloaded"));
+    const g = await gwFor(rt, { omp: omp({ providers: ["acme", "deepseek"] }) });
+    const r = await call(g, "acme/fast-1");
+    expect(await text(r)).toBe("hello from deepseek/deepseek-v4-flash");
+    expect(rt.calls.map(c => c.id)).toEqual(["acme/fast-1", "deepseek/deepseek-v4-flash"]);
+    expect(rt.calls[1]!.o.reasoning).toBe("high");
+    rt.script("deepseek/deepseek-v4-flash", fail(429, "slow down"));
+    rt.script("acme/slow-2", fail(500, "boom"));
+    g.cooldowns.set("acme/fast-1", 60_000, "test");
+    const h = await call(g, "acme/fast-1");
+    expect(h.status).toBe(409);
+    expect(h.headers.get(FALLBACK_HEADER)).toBe("claude-sonnet-5-5");
+  });
+
+  test("a first-event timeout aborts the omp call and walks on; an unknown id is a 404", async () => {
+    const rt = fake();
+    rt.script("acme/fast-1", hang);
+    const g = await gwFor(rt, { omp: omp({ fallbackChains: false }), retry: { maxRetries: 0, fallbackChains: { "acme/fast-1": ["other/o-1"] } } });
+    const r = await call(g, "acme/fast-1");
+    expect(await text(r)).toBe("hello from other/o-1");
+    expect(rt.calls[0]!.o.signal.aborted).toBe(true);
+    expect((await call(g, "acme/nope")).status).toBe(404);
+    expect((await call(g, "anthropic/claude-sonnet-5-5")).status).toBe(404);
+  });
+
+  test("a client abort aborts the omp call", async () => {
+    const rt = fake();
+    rt.script("acme/fast-1", (_c, o) => (async function* () { yield { type: "text_delta", contentIndex: 0, delta: "part" } as any; await new Promise((_, rej) => o.signal.addEventListener("abort", () => rej(new Error("aborted")))); })());
+    const g = await gwFor(rt, { omp: omp({ fallbackChains: false }), timeouts: { streamIdleTimeoutSeconds: 30 } });
+    const ac = new AbortController();
+    const r = await call(g, "acme/fast-1", ac.signal);
+    const reader = r.body!.getReader();
+    await reader.read();
+    ac.abort();
+    await reader.cancel().catch(() => {});
+    await Bun.sleep(50);
+    expect(rt.calls[0]!.o.signal.aborted).toBe(true);
+  });
+});
+
+describe("files", () => {
   test("agent frontmatter parsing", () => {
     expect(parseAgentFile("---\nname: a\nmodel: x/y\n---\nbody\n", "a.md")).toEqual({ front: { name: "a", model: "x/y" }, body: "body" });
     expect(() => parseAgentFile("no frontmatter", "a.md")).toThrow(/no --- frontmatter/);
   });
-  test("loadConfig lists the omp files as sources, so a change to any reloads", () => {
-    const d = copy();
-    writeFileSync(`${d}/ours.yml`, `omp:\n  dir: ${d}\n  providers: [acme]\n  agents: [worker]\n`);
-    const c = loadConfig(`${d}/ours.yml`);
-    expect(c.sources.map(s => s.path)).toEqual([`${d}/ours.yml`, `${d}/models.yml`, `${d}/config.yml`, `${d}/agents/worker.md`]);
-    expect(c.sources.every(s => s.mtimeMs > 0)).toBe(true);
+  test("a missing or broken omp config.yml is an error; sources list omp's files for reload", async () => {
+    expect((await problems({ omp: omp({ dir: `${tmp}/nowhere` }) }))[0]).toMatch(/^omp: cannot read .*nowhere\/config.yml/);
+    const d = mkdtempSync(`${tmp}/d-`);
+    cpSync(FIX, d, { recursive: true });
+    writeFileSync(`${d}/ours.yml`, `omp:\n  dir: ${d}\n  agents: [worker]\n`);
+    const c = await loadConfig(`${d}/ours.yml`, opts(fake()));
+    expect(c.sources.map(s => s.path)).toEqual([`${d}/ours.yml`, `${d}/config.yml`, `${d}/agents/worker.md`]);
+    writeFileSync(`${d}/config.yml`, "retry: [broken\n");
+    expect((await problems({ omp: omp({ dir: d }) }))[0]).toContain(`cannot read ${d}/config.yml`);
   });
-});
-
-describe("gateway hot reload of omp files", () => {
-  test("a changed omp agent file reloads; a broken models.yml keeps the last good config", async () => {
-    const { Gateway } = await import("../src/server");
+  test("the gateway reloads when an omp file changes, and keeps the last good config when one breaks", async () => {
     const d = mkdtempSync(`${tmp}/hr-`);
     cpSync(FIX, d, { recursive: true });
-    writeFileSync(`${d}/ours.yml`, `gateway: { accessLog: /dev/null }\nomp:\n  dir: ${d}\n  providers: [acme]\n  agents: [worker]\n`);
-    const gw = new Gateway(loadConfig(`${d}/ours.yml`));
+    writeFileSync(`${d}/ours.yml`, `gateway: { accessLog: /dev/null }\nomp:\n  dir: ${d}\n  agents: [worker]\n`);
+    const rt = fake();
+    const gw = new Gateway(await loadConfig(`${d}/ours.yml`, opts(rt)));
+    gw.loadOpts = opts(rt);
     gw.watch(30);
     try {
       await Bun.sleep(20);
       writeFileSync(`${d}/agents/worker.md`, readFileSync(`${d}/agents/worker.md`, "utf8").replace("General worker pinned to Acme Fast 1.", "Changed in omp."));
-      await Bun.sleep(150);
+      await Bun.sleep(200);
       expect(gw.cfg.agents[0]!.description).toBe("Changed in omp.");
-      writeFileSync(`${d}/models.yml`, "providers: [broken\n");
-      await Bun.sleep(150);
+      writeFileSync(`${d}/config.yml`, "retry: [broken\n");
+      await Bun.sleep(200);
       expect(gw.cfg.agents[0]!.description).toBe("Changed in omp.");
-      expect(Object.keys(gw.cfg.models)).toContain("acme/fast-1");
-      const health = await (await gw.fetch(new Request("http://gw/health"))).json() as any;
-      expect(health.reloadError).toContain("is not valid YAML");
+      expect(((await (await gw.fetch(new Request("http://gw/health"))).json()) as any).reloadError).toContain("cannot read");
     } finally { gw.stop(); }
   });
 });

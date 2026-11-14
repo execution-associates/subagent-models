@@ -14,6 +14,8 @@ export type ModView = {
   agents: { name: string; model: string; effort: string | null; description: string; prompt: string | null; extra: Record<string, unknown> }[];
   /** Every file the config is built from (ours, and omp's when imported). */
   sources?: string[];
+  /** Providers whose `<provider>/<model>` ids route to the gateway (ours, then omp's). */
+  providers?: string[];
   /** omp entries that were skipped, and why. */
   warnings?: string[];
 };
@@ -25,19 +27,34 @@ export function messagesPath(url: string): string | null {
 }
 
 /**
- * The routed model a request body names, or null. A cheap text test first: a JSON
- * string value cannot hold an unescaped `"model":"`, so only the top-level field
- * (or a nested one, which the parse rules out) can match.
+ * Whether an id routes to the gateway: `<provider>/<model>` with a provider the gateway
+ * reports (its own and omp's), never `anthropic/…` (the Claude hand-back), never an id
+ * naming a Claude model. Real Anthropic ids carry no `/`, so they never match.
  */
-export function routedModel(body: string, ids: Iterable<string>): string | null {
-  let hit = false;
-  for (const id of ids) if (body.includes(`"model":${JSON.stringify(id)}`)) { hit = true; break; }
-  if (!hit) return null;
+export function routes(id: string, view: ModView): boolean {
+  const slash = id.indexOf("/");
+  if (slash <= 0 || id.startsWith("anthropic/") || /(^|\/)claude-/.test(id)) return false;
+  const providers = view.providers ?? [...new Set(Object.keys(view.models).map(m => m.slice(0, m.indexOf("/"))))];
+  return providers.includes(id.slice(0, slash));
+}
+
+const MODEL_KEY = /"model":"([^"\\]{1,300})"/g;
+
+/**
+ * The routed model a request body names, or null. One regex pass finds every
+ * `"model":"…"` key (a JSON string value cannot hold an unescaped `"model":"`, so these
+ * are real keys, top-level or nested in tool inputs); only when one of them routes is
+ * the body parsed, and then the top-level field decides. A main-session body with
+ * no routable candidate costs one scan and no parse.
+ */
+export function routedModel(body: string, view: ModView): string | null {
+  let candidate = false;
+  for (const m of body.matchAll(MODEL_KEY)) if (routes(m[1]!, view)) { candidate = true; break; }
+  if (!candidate) return null;
   try {
-    const m = JSON.parse(body)?.model;
-    for (const id of ids) if (id === m) return id;
-  } catch {}
-  return null;
+    const top = JSON.parse(body)?.model;
+    return typeof top === "string" && routes(top, view) ? top : null;
+  } catch { return null; }
 }
 
 /** Headers for the gateway: everything but credentials (the gateway never gets a Claude login). */
@@ -141,7 +158,7 @@ export async function routeFetch<E extends FetchEvent>(e: E, view: ModView, send
   if (typeof body !== "string") return send(e);
   const path = messagesPath(e.url);
   if (!path) return send(e);
-  const model = routedModel(body, Object.keys(view.models));
+  const model = routedModel(body, view);
   if (!model) return send(e);
 
   const socket = view.socket;

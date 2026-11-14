@@ -8,3 +8,5 @@ captures/
 *.debug
 # written by Claude Code when it loads the mod from this folder
 mod/.claude-plugin/types/
+gateway/omp-sdk/node_modules/
+gateway/omp-sdk/spike.ts

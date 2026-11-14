@@ -83,7 +83,7 @@ short answer. `ping` events go out every `pingIntervalSeconds` while the upstrea
 ## Configuration
 
 One file: `~/.config/subagent-models/config.yml` (`$SUBAGENT_MODELS_CONFIG` overrides,
-for both the gateway and the mod), optionally importing from omp (see omp compatibility). `config.example.yml` is the annotated reference;
+for both the gateway and the mod), optionally using omp's models and logins (see omp-native mode). `config.example.yml` is the annotated reference;
 the live file starts as a copy of it. Edits are picked up within ~3 s by the gateway
 and the mod. A broken edit is reported (`journalctl --user -u subagent-models`, and
 a line in the Claude Code transcript) and the last good config stays in force.
@@ -160,50 +160,72 @@ retry:
       - anthropic/claude-sonnet-5-5:medium     # a real Claude model, served by the mod
 ```
 
-## omp compatibility
+## omp-native mode
 
-For [omp](https://omp.sh) users, an optional `omp:` block imports providers,
-models, fallback chains and agents from omp's own files, so they are defined once:
+With an `omp:` block, the gateway uses [omp](https://omp.sh)'s own machinery for
+models, auth and transport, so anything omp can call is a subagent model here:
 
 ```yaml
 omp:
-  dir: ~/.omp/agent
-  providers: [refuseless]       # which omp providers to import; nothing by default
-  models: [refuseless/deepseek-v4.1-flash-fast]   # optional: only these models
-  fallbackChains: true          # omp's retry.fallbackChains, maxRetries, rateLimitWalksChain
-  timeouts: false               # omp's providers.stream*TimeoutSeconds
-  agents: []                    # omp agents/<name>.md to expose, by name
+  dir: ~/.omp/agent            # omp's agent directory (default)
+  # providers: [refuseless, deepseek]   # optional restriction (default: every omp provider but anthropic)
+  fallbackChains: true         # import omp's retry.fallbackChains, maxRetries, rateLimitWalksChain
+  agents: []                   # omp agents/<name>.md to expose, by name
+  versionCheck: exact          # exact | warn (see below)
 ```
 
-- Read-only and dependency-free: `models.yml`, `config.yml` and `agents/<name>.md`
-  under `dir` are parsed directly. omp is never run, nothing under its directory is
-  written, its databases are never opened. Without the block none of this happens.
-- What is imported: a provider's `baseUrl`, `api`, `apiKey` (its `!command` runs in
-  the gateway like any of ours, and is never logged), `headers`, and its models'
-  `id`, `name`, `reasoning`, `input`, `contextWindow`, `maxTokens` and the compat
-  knobs this gateway knows (`reasoningEffortMap`, `maxTokensField`, …). Other omp
-  keys are ignored. Model ids stay `<provider>/<model>`, under the same rules
-  (no `claude-` in an id, `anthropic` reserved).
-- **Precedence: this file wins, key by key.** A provider or model defined in both
-  merges field by field (compat maps key by key); a chain, an agent, a timeout or a
-  retry setting defined here replaces omp's. `cli.ts check` prints the merged result
-  with each item's origin: `[ours]`, `[omp]` or `[ours over omp]`.
-- Skipped with a warning (in `check`, the gateway journal and the transcript), never
-  an error: a listed provider missing from `models.yml` or speaking an API the gateway
-  does not (omp built-ins such as `openai-codex-responses`), a model id with a Claude
-  name, a chain entry naming something not imported (omp built-in providers such as
-  `deepseek/…`, a provider not in `providers`), an agent whose model is not imported.
-  `anthropic/claude-*` chain entries become the usual Claude hand-back.
-- omp agents are opt-in by name because their prompts are written for omp's tools,
-  not Claude Code's; read one before exposing it. They are registered as
-  `subagent-models:<name>`; omp-only frontmatter (such as `tools`) is ignored.
-- Timeouts are not imported by default: omp's `providers.streamFirstEventTimeoutSeconds`
-  and `streamIdleTimeoutSeconds` apply to every omp provider at once (default `-1`,
-  meaning omp's own 5-minute watchdogs). omp's per-model `compat.streamFirstEventTimeoutMs`
-  / `compat.streamIdleTimeoutMs` are imported as that model's timeouts when `timeouts: true`.
-- omp updates itself: a missing, unparsable or reshaped omp file is reported and the
-  last good merged config stays in force, as for a broken edit here. The gateway and
-  the mod re-read whenever any imported file changes.
+- **Catalogue:** omp's model registry: its built-in providers, `models.yml`, and the
+  models omp discovered. Every `<provider>/<model>` it resolves routes here with no
+  list to keep, e.g. `refuseless/deepseek-v4.1-flash-fast` or omp's built-in
+  `deepseek/deepseek-v4-flash`. `cli.ts omp-find provider/model` shows how one resolves.
+- **Auth:** omp's auth store (`agent.db`, through omp's own `AuthStorage`): API keys,
+  `!command` keys and OAuth logins with refresh. omp refreshes tokens under a lease
+  shared across processes, so running omp sessions and the gateway use it side by side.
+  The gateway never sees a key in its own config for these providers.
+- **Transport:** omp's `streamSimple`, i.e. every API family omp speaks (OpenAI
+  completions and Responses, Anthropic-compatible, Google, Bedrock, ...). The gateway
+  translates Claude Code's Anthropic Messages requests to omp's model-call format and
+  back; omp makes one HTTP attempt per call (`maxHttpAttempts: 1`) and our retries,
+  timeouts, cooldowns and fallback chains apply on top.
+- **`anthropic/…` stays the Claude hand-back** on the Claude Code session's own login;
+  omp's Anthropic credentials are never used, and the main session is never routed.
+- **Our file still wins.** A provider defined under `providers:` (with `baseUrl` and
+  `models`) is served by this gateway's own adapters and shadows omp's provider of the
+  same name entirely. A chain, an agent or a retry setting defined here replaces omp's.
+  Timeouts are always ours (omp's `providers.stream*TimeoutSeconds` apply to all its
+  providers at once). `check` prints every routed model, chain, agent and setting with
+  its origin: `[ours]`, `[omp]`, `[ours over omp]`.
+- **What is read as files:** only omp's `config.yml` (chains) and the opt-in
+  `agents/<name>.md`. omp agent prompts are written for omp's tools, not Claude Code's;
+  read one before exposing it (omp-only frontmatter such as `tools` is ignored).
+  Chain entries that do not resolve (no such model, a restricted provider) and agents
+  pinned to Claude are skipped with a warning.
+- **Subscription logins** (ChatGPT via `openai-codex`, a Claude subscription) route
+  like any other omp provider; `check` notes any model a config names that is served
+  by one. Restrict with `providers:` to keep them out.
+
+### The SDK: an optional dependency
+
+omp-native mode needs omp's SDK (`@oh-my-pi/pi-coding-agent` and `@oh-my-pi/pi-ai`,
+exact pins in `gateway/omp-sdk/package.json`, lockfile committed). Without an `omp:`
+block nothing of it is loaded and the gateway has no dependencies. Install it with
+
+```sh
+scripts/install-omp-sdk.sh            # the pinned version, from the lockfile
+scripts/install-omp-sdk.sh 18.21.0    # re-pin to a newer installed omp
+```
+
+which installs in a throwaway isb sandbox with only `gateway/omp-sdk/` mounted
+(about 460 MB, mostly omp's native binaries; no install scripts run). The gateway then
+loads it from there.
+
+**Versions:** omp updates itself, and its auth store migrates its schema forward; an
+SDK older than the store only warns and carries on. So the SDK version must match the
+installed omp (read from `~/.omp/agent/last-changelog-version`): with
+`versionCheck: exact` a mismatch is a config error naming both versions and the
+re-pin command, and the gateway keeps the last good config (or does not start);
+`versionCheck: warn` runs anyway. After omp updates: re-pin, then
+`systemctl --user restart subagent-models`.
 
 ## Fallback semantics
 
@@ -325,7 +347,13 @@ the gateway like any other request.
 - Server tools (Anthropic-side web search, advisor) are not available to routed agents.
 - An agent removed from the YAML stays registered (hidden from the model) until the
   mod reloads.
-- `openai-responses` is not implemented.
+- `openai-responses` is not implemented in the gateway's own adapters (omp-native mode
+  reaches it through omp's transport).
+- Through omp's transport, tool-call arguments arrive whole when the model finishes
+  each call, not streamed token by token (omp interleaves parallel calls); text and
+  thinking do stream.
+- omp-native mode follows omp's own reasoning levels per model; a level a model does not
+  support is mapped by omp.
 - The default agent prompt is a copy of the general-purpose agent's text and can
   drift from Claude Code's own between releases.
 
