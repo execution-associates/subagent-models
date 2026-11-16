@@ -1,7 +1,7 @@
 // Canonical request -> pi-ai's Context, and pi-ai's stream events -> Anthropic events.
 // The transport itself (HTTP, auth, every API family) is omp's.
 import type { CImage, Canonical, CText } from "./canonical";
-import { makeSignature } from "./canonical";
+import { makeSignature, portableSchema } from "./canonical";
 import type { Level } from "./config";
 import type { OmpEvent, OmpModelInfo, OmpRuntime } from "./omp-runtime";
 import { type AnthropicEvent, type ErrorClass, UpstreamError } from "./upstream";
@@ -55,7 +55,7 @@ export function toOmpContext(c: Canonical, model: OmpModelInfo): { systemPrompt:
   return {
     systemPrompt: c.system.map(b => b.text).filter(Boolean),
     messages,
-    tools: c.tools.map(t => ({ name: t.name, description: t.description, parameters: t.inputSchema })),
+    tools: c.tools.map(t => ({ name: t.name, description: t.description, parameters: portableSchema(t.inputSchema) })),
   };
 }
 

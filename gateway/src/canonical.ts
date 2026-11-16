@@ -259,3 +259,29 @@ export function estimateTokens(raw: Record<string, any>): number {
   walk(raw.system); walk(raw.messages); walk(raw.tools);
   return Math.ceil(chars / 3.6) + images * 1600;
 }
+
+// Sub-keywords whose values are maps from a NAME to a schema; a property called
+// "pattern" lives here and is not the keyword.
+const NAME_MAPS = new Set(["properties", "patternProperties", "$defs", "definitions", "dependentSchemas"]);
+
+/** A regex only JavaScript-flavoured engines take: \0 and other digit escapes, lookaround, or one JS itself refuses. */
+function nonPortablePattern(p: string): boolean {
+  if (/\\[0-9]/.test(p) || /\(\?<?[=!]/.test(p)) return true;
+  try { new RegExp(p); return false; } catch { return true; }
+}
+
+/**
+ * A tool schema for an upstream that is not Anthropic. Providers compile `pattern` with their
+ * own regex engine and refuse the whole request over one they cannot parse (`^[^\0]*$`), so
+ * those patterns are dropped; Claude Code still validates the tool input itself.
+ */
+export function portableSchema<T>(schema: T, names = false): T {
+  if (Array.isArray(schema)) return schema.map(v => portableSchema(v)) as T;
+  if (!schema || typeof schema !== "object") return schema;
+  const out: Record<string, unknown> = {};
+  for (const [k, v] of Object.entries(schema as Record<string, unknown>)) {
+    if (!names && k === "pattern" && typeof v === "string" && nonPortablePattern(v)) continue;
+    out[k] = names ? portableSchema(v) : portableSchema(v, NAME_MAPS.has(k));
+  }
+  return out as T;
+}

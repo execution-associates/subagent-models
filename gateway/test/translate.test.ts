@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { makeSignature, normalize, readSignature, withIdentity } from "../src/canonical";
+import { makeSignature, normalize, portableSchema, readSignature, withIdentity } from "../src/canonical";
 import { OpenAIStream, ToolNames, mapUsage, toOpenAI } from "../src/openai";
 import { toAnthropic } from "../src/anthropic";
 import { identityLine } from "../src/chain";
@@ -178,5 +178,28 @@ describe("toAnthropic (third-party Anthropic-compatible)", () => {
     expect(JSON.stringify(b.messages[0])).toContain("<system-reminder>\\nThe following tools just became available");
     // images to a text-only model become notes
     expect(JSON.stringify(b)).not.toContain('"type":"image"');
+  });
+});
+
+describe("portableSchema", () => {
+  test("drops patterns other regex engines refuse, keeps the rest", () => {
+    const schema = {
+      type: "object",
+      properties: {
+        // a parameter NAMED pattern is not the keyword
+        pattern: { type: "string", description: "glob" },
+        file_paths: { type: "array", items: { type: "string", pattern: "^[^\\0]*$", maxLength: 1024 } },
+        id: { type: "string", pattern: "^[0-9a-f]{32}$" },
+        version: { anyOf: [{ const: "latest" }, { type: "string", pattern: "^(0|[1-9]\\d{0,3})$" }] },
+        look: { type: "string", pattern: "^(?!x).*$" },
+      },
+    };
+    const out = portableSchema(schema) as any;
+    expect(out.properties.pattern).toEqual({ type: "string", description: "glob" });
+    expect(out.properties.file_paths.items).toEqual({ type: "string", maxLength: 1024 });
+    expect(out.properties.id.pattern).toBe("^[0-9a-f]{32}$");
+    expect(out.properties.version.anyOf[1].pattern).toBe("^(0|[1-9]\\d{0,3})$");
+    expect(out.properties.look).toEqual({ type: "string" });
+    expect(schema.properties.file_paths.items.pattern).toBe("^[^\\0]*$");
   });
 });

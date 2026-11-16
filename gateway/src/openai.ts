@@ -1,6 +1,6 @@
 // Canonical request -> OpenAI chat completions, and its stream -> Anthropic events.
 import type { CBlock, CImage, CMessage, Canonical, CText } from "./canonical";
-import { makeSignature } from "./canonical";
+import { makeSignature, portableSchema } from "./canonical";
 import type { Level, ModelDef } from "./config";
 import { type AnthropicEvent, type OpenCtx, UpstreamError, httpError, post, sse } from "./upstream";
 
@@ -136,7 +136,7 @@ function simplify(parts: OaiPart[]): string | OaiPart[] {
 }
 
 function cleanSchema(s: Record<string, unknown>): Record<string, unknown> {
-  const { $schema: _, ...rest } = s;
+  const { $schema: _, ...rest } = portableSchema(s);
   return rest.type ? rest : { type: "object", ...rest };
 }
 
