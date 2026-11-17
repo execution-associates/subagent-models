@@ -1,15 +1,18 @@
 #!/usr/bin/env bun
-// subagent-models gateway CLI.
-//   serve [--config FILE]        run the gateway (what the systemd unit runs)
+// subagent-models CLI (bin/subagent-models runs this).
+//   install [--no-start] | uninstall | start | stop | restart | logs [sync] [-f]
+//                                the gateway as a user service (systemd on Linux, launchd on macOS)
+//   serve [--config FILE]        run the gateway in the foreground (what the service runs)
 //   check [--config FILE]        validate the config and print what it defines
 //   mod-config [--config FILE]   the config as the Claude Code mod reads it (JSON, no keys)
-//   status [--config FILE]       ask the running gateway for models, chains, cooldowns, recent requests
+//   status [--config FILE]       service state, then ask the running gateway for models, chains, cooldowns, recent requests
 //   key-check PROVIDER           resolve a provider's key and say whether it worked (never prints it)
 //   omp-sdk status|sync [--force]|rollback|unpin|use VERSION   the omp SDK copy that follows the installed omp
 //   omp-find PROVIDER/MODEL      how omp resolves an id, and whether it routes here (omp-native mode)
 import { ConfigError, defaultConfigPath, loadConfig, modView } from "./config";
 import { KeyStore } from "./keys";
 import { main } from "./server";
+import { control, install, logs, modDir, serviceState, statusHint, uninstall, version } from "./service";
 import { describe as describeSdk, readState, realDeps, rollback, stateDir, switchTo, sync, unpin } from "./omp-sdk";
 
 const args = process.argv.slice(2);
@@ -26,6 +29,24 @@ async function load() {
 }
 
 switch (cmd) {
+  case "install":
+    await install(configPath, { start: !args.includes("--no-start") });
+    break;
+  case "uninstall":
+    await uninstall();
+    break;
+  case "start": case "stop": case "restart":
+    await control(cmd);
+    break;
+  case "logs":
+    process.exitCode = await logs(args.includes("sync") ? "sync" : "gateway", args.includes("-f") || args.includes("--follow"));
+    break;
+  case "mod-path":
+    console.log(modDir());
+    break;
+  case "version": case "--version": case "-v":
+    console.log(version());
+    break;
   case "serve":
     await main(configPath);
     break;
@@ -55,12 +76,13 @@ switch (cmd) {
     break;
   }
   case "status": {
+    console.log(await serviceState());
     const c = await load();
     try {
       const r = await fetch("http://gateway/status", { unix: c.gateway.socket } as RequestInit);
       console.log(JSON.stringify(await r.json(), null, 2));
     } catch (e) {
-      console.error(`the gateway is not answering on ${c.gateway.socket}: ${(e as Error).message}\n  systemctl --user status subagent-models`);
+      console.error(`the gateway is not answering on ${c.gateway.socket}: ${(e as Error).message}\n  ${statusHint()}`);
       process.exit(1);
     }
     break;
@@ -105,7 +127,14 @@ switch (cmd) {
     break;
   }
   default:
-    console.log("usage: cli.ts serve|check|mod-config|status|key-check PROVIDER [--config FILE]");
+    console.log(`subagent-models ${version()}
+
+service:  install [--no-start] | uninstall | start | stop | restart | status | logs [sync] [-f]
+config:   check | key-check PROVIDER | mod-path | omp-find PROVIDER/MODEL
+omp SDK:  omp-sdk status | sync [--force] | rollback | unpin | use VERSION
+other:    serve (foreground) | mod-config | version
+
+Every command takes --config FILE (default ${configPath}).`);
 }
 
 // omp's SDK keeps timers and database handles open; a one-shot command ends here.

@@ -1,0 +1,4 @@
+# Left out of the release archive
+.github export-ignore
+gateway/test export-ignore
+mod/hooks/*.test.ts export-ignore

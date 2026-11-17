@@ -1,0 +1,23 @@
+# Push a tag vX.Y.Z to publish a release that `mise use -g github:execution-associates/subagent-models` installs.
+# The asset is the source tree (bun runs it; the gateway has no npm dependencies).
+name: release
+on:
+  push:
+    tags: ["v*"]
+permissions:
+  contents: write
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Check the tag matches the plugin version
+        run: |
+          v=$(jq -r .version mod/.claude-plugin/plugin.json)
+          [ "v$v" = "$GITHUB_REF_NAME" ] || { echo "tag $GITHUB_REF_NAME but plugin.json says $v"; exit 1; }
+      - name: Build the archive
+        run: git archive --format=tar.gz --prefix=subagent-models/ -o "subagent-models-$GITHUB_REF_NAME.tar.gz" HEAD
+      - name: Publish
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release create "$GITHUB_REF_NAME" "subagent-models-$GITHUB_REF_NAME.tar.gz" --generate-notes

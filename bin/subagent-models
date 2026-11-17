@@ -1,0 +1,10 @@
+#!/bin/sh
+# Entry point for the subagent-models CLI (what mise puts on PATH). Needs bun.
+self=$0
+while [ -L "$self" ]; do
+  t=$(readlink "$self")
+  case $t in /*) self=$t ;; *) self=$(dirname "$self")/$t ;; esac
+done
+root=$(cd "$(dirname "$self")/.." && pwd)
+command -v bun >/dev/null 2>&1 || { echo "subagent-models needs bun on PATH (mise use -g bun)" >&2; exit 127; }
+exec bun "$root/gateway/src/cli.ts" "$@"

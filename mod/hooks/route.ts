@@ -167,7 +167,7 @@ export async function routeFetch<E extends FetchEvent>(e: E, view: ModView, send
   try {
     res = await send({ ...e, url: `http://subagent-models${path}`, init: { ...init, headers: gatewayHeaders(e.init?.headers), body, socketPath: socket } });
   } catch (err) {
-    return errorValue(503, `subagent-models: the gateway is not answering on ${socket} (${(err as Error)?.message ?? err}). Nothing was sent to Claude. Check it with: systemctl --user status subagent-models; journalctl --user -u subagent-models -e`);
+    return errorValue(503, `subagent-models: the gateway is not answering on ${socket} (${(err as Error)?.message ?? err}). Nothing was sent to Claude. Check it with: subagent-models status; subagent-models logs`);
   }
   if (!res || !("value" in res) || !res.value) {
     const why = res && "deny" in res ? (res as { deny: string }).deny : "no answer";
@@ -176,7 +176,7 @@ export async function routeFetch<E extends FetchEvent>(e: E, view: ModView, send
   const v = (res as { value: { status: number; headers: Record<string, string> } }).value;
   if (v.status === 0 || (v.status >= 500 && !v.headers["x-subagent-models-served-by"] && !v.headers["x-should-retry"])) {
     // Not the gateway's own answer (its errors carry x-should-retry): the socket is dead or something else answered.
-    return errorValue(503, `subagent-models: the gateway on ${socket} did not answer (HTTP ${v.status}). Nothing was sent to Claude. Check it with: systemctl --user status subagent-models`);
+    return errorValue(503, `subagent-models: the gateway on ${socket} did not answer (HTTP ${v.status}). Nothing was sent to Claude. Check it with: subagent-models status`);
   }
   const claude = v.headers[FALLBACK_HEADER];
   if (!claude) return res;

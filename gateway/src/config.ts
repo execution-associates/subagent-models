@@ -139,8 +139,10 @@ export function defaultConfigPath(): string {
 }
 
 export function defaultSocketPath(): string {
-  const run = process.env.XDG_RUNTIME_DIR || `/run/user/${process.getuid?.() ?? 1000}`;
-  return `${run}/subagent-models/gateway.sock`;
+  if (process.env.XDG_RUNTIME_DIR) return `${process.env.XDG_RUNTIME_DIR}/subagent-models/gateway.sock`;
+  // macOS has no per-user runtime directory; the state directory is per user and short enough for a socket path.
+  if (process.platform === "darwin") return `${homedir()}/.local/state/subagent-models/gateway.sock`;
+  return `/run/user/${process.getuid?.() ?? 1000}/subagent-models/gateway.sock`;
 }
 
 export const expandHome = (p: string) => (p.startsWith("~/") ? homedir() + p.slice(1) : p);
