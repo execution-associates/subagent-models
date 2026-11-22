@@ -275,6 +275,44 @@ requests to the URL with the two `CF-Access-Client-*` headers. Provider keys sta
 the gateway, and the session's Claude credentials are stripped as always. The session
 still has to load the mod, and its network policy has to allow the gateway's host.
 
+## Claude desktop and claude.ai/code
+
+Only Claude Code sessions can use the mod, because it is a Claude Code plugin. Chat
+conversations in the desktop app or on claude.ai have no subagents and load no plugins.
+
+**Desktop app (the Code tab).** The Code tab runs Claude Code on your own machine, so
+[Install](#install) applies unchanged: the same gateway service, and the same
+`CLAUDE_CODE_PLUGIN_DIRS` entry in `~/.claude/settings.json`. An app launched from the
+Dock does not read your shell profile, so `bun` from mise may not be on its `PATH`. The
+mod falls back to a login shell, and if that also fails, set `SUBAGENT_MODELS_BUN` to
+bun's full path (`mise which bun`) in the same `env` block. The desktop app can also
+use a remote gateway instead, the way the web app does.
+
+**claude.ai/code (cloud sessions).** A cloud session runs in a fresh container with no
+gateway, so it uses a [remote gateway](#remote-sessions):
+
+1. Enable the plugin in the `.claude/settings.json` of the repo the session works on
+   (a cloud session reads the repo's settings, not your home directory's):
+
+   ```json
+   {
+     "extraKnownMarketplaces": {
+       "subagent-models": { "source": { "source": "github", "repo": "execution-associates/subagent-models" } }
+     },
+     "enabledPlugins": { "subagent-models@subagent-models": true }
+   }
+   ```
+
+   The repo is private, so the session's GitHub access has to cover it.
+2. In the cloud environment's settings, set `SUBAGENT_MODELS_URL`,
+   `SUBAGENT_MODELS_ACCESS_ID` and `SUBAGENT_MODELS_ACCESS_SECRET`.
+3. Allow the gateway's host (for example `llm-gateway.execution.associates`) in the
+   environment's network access. It is the only host needed: provider keys and API
+   hosts stay with the gateway.
+
+> **Not yet verified:** whether cloud sessions run plugin hook modules (the mod's
+> `http.fetch` hook) at all. Try it with one agent before relying on it.
+
 ## How it works
 
 ```
