@@ -64,7 +64,8 @@ subagent-models start | stop
 | Logs | `journalctl --user -u subagent-models` | `~/Library/Logs/subagent-models/gateway.log` |
 | Socket | `$XDG_RUNTIME_DIR/subagent-models/gateway.sock` | `~/.local/state/subagent-models/gateway.sock` |
 
-The gateway listens only on that Unix socket (mode 0600), never on a TCP port.
+The gateway listens on that Unix socket (mode 0600). It opens a TCP port only when
+`gateway.listen` asks for one, and only on loopback (see [Remote sessions](#remote-sessions)).
 `subagent-models serve` runs it in the foreground instead. Full request records,
 including every attempt, are in `~/.local/state/subagent-models/access.jsonl`.
 
@@ -248,6 +249,31 @@ subagent-models logs sync
 ```
 
 </details>
+
+## Remote sessions
+
+A Claude Code session on another machine, such as claude.ai/code in the cloud, can use
+a gateway that runs elsewhere. The gateway has no auth of its own, so it is published
+through a tunnel with a gate in front, here a cloudflared tunnel behind Cloudflare Access:
+
+```yaml
+gateway:
+  listen: 127.0.0.1:8110       # loopback only; the tunnel's origin
+```
+
+In the remote session's environment:
+
+| Variable | Value |
+| -- | -- |
+| `SUBAGENT_MODELS_URL` | the gateway's HTTPS URL, e.g. `https://llm-gateway.execution.associates` |
+| `SUBAGENT_MODELS_ACCESS_ID` | the Access service token's client id |
+| `SUBAGENT_MODELS_ACCESS_SECRET` | its client secret |
+
+With `SUBAGENT_MODELS_URL` set, the mod needs no local config, gateway or bun. It loads
+the gateway's routing table from `GET /mod-config` (polled every 30 s) and sends routed
+requests to the URL with the two `CF-Access-Client-*` headers. Provider keys stay with
+the gateway, and the session's Claude credentials are stripped as always. The session
+still has to load the mod, and its network policy has to allow the gateway's host.
 
 ## How it works
 

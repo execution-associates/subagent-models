@@ -23,6 +23,16 @@ describe("config", () => {
     expect(c.models["refuseless/deepseek-v4.1-flash-fast"]!.openai.reasoningEffortMap.off).toBe("off");
   });
 
+  test("gateway.listen is loopback TCP or nothing", () => {
+    const at = (listen: unknown) => { const d: any = { ...base(), gateway: { listen } }; return problems(d); };
+    expect(validate({ ...base(), gateway: { listen: 8097 } } as any).gateway.listen).toEqual({ host: "127.0.0.1", port: 8097 });
+    expect(validate({ ...base(), gateway: { listen: "[::1]:8097" } } as any).gateway.listen).toEqual({ host: "::1", port: 8097 });
+    expect(validate(base() as any).gateway.listen).toBe(null);
+    expect(at("0.0.0.0:8097").some(p => p.includes("not a loopback address"))).toBe(true);
+    expect(at("127.0.0.1:99999").some(p => p.includes("is not host:port"))).toBe(true);
+    expect(at(true)).toContain("gateway.listen: must be host:port or a port number");
+  });
+
   test("parseRef splits a level suffix only when it is a level", () => {
     expect(parseRef("a/b:high")).toEqual({ id: "a/b", level: "high" });
     expect(parseRef("a/b")).toEqual({ id: "a/b", level: null });

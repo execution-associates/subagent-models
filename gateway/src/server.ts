@@ -1,9 +1,10 @@
-// The gateway daemon: Anthropic Messages API on a Unix socket, served from the
-// configured upstreams. Only the Claude Code mod talks to it.
+// The gateway daemon: Anthropic Messages API on a Unix socket (and, with
+// gateway.listen, loopback TCP for a gated tunnel), served from the configured
+// upstreams. Only the Claude Code mod talks to it.
 import { appendFile, mkdir, chmod, unlink, writeFile } from "node:fs/promises";
 import { dirname } from "node:path";
 import { BadRequest, estimateTokens, normalize } from "./canonical";
-import { type Config, ConfigError, loadConfig, sourcesStamp } from "./config";
+import { type Config, ConfigError, loadConfig, modView, sourcesStamp } from "./config";
 import { type AttemptLog, type ChainResult, type Committed, Cooldowns, type Deps, chainFor, runChain } from "./chain";
 import { KeyStore, scrub } from "./keys";
 import { type AnthropicEvent, UpstreamError } from "./upstream";
@@ -50,6 +51,7 @@ export class Gateway {
       try {
         const next = await loadConfig(this.cfg.path, this.loadOpts);
         if (next.gateway.socket !== this.cfg.gateway.socket) console.log(`config: gateway.socket changed; restart the gateway to move it`);
+        if (JSON.stringify(next.gateway.listen) !== JSON.stringify(this.cfg.gateway.listen)) console.log(`config: gateway.listen changed; restart the gateway to move it`);
         this.cfg = next;
         stamp = sourcesStamp(next.sources);
         this.reloadError = null;
@@ -102,6 +104,8 @@ export class Gateway {
         recent: this.recent.slice(-20),
       });
     }
+    // The routing table a remote mod (SUBAGENT_MODELS_URL) loads instead of running mod-config locally.
+    if (req.method === "GET" && url.pathname === "/mod-config") return Response.json({ ok: true, config: modView(this.cfg), reloadError: this.reloadError });
     if (req.method === "POST" && url.pathname === "/v1/messages/count_tokens") {
       try { return Response.json({ input_tokens: estimateTokens((await req.json()) as Record<string, any>) }); }
       catch { return errorResponse(400, "invalid_request_error", "subagent-models: count_tokens body is not JSON"); }
@@ -265,7 +269,7 @@ export class Gateway {
     return this.notStreamed({ kind: "error", status: 503, errorType: "api_error", message: `subagent-models: every model in the chain for ${canon.model} failed mid-response` }, finish);
   }
 
-  async listen(): Promise<ReturnType<typeof Bun.serve>> {
+  async listen(): Promise<ReturnType<typeof Bun.serve>[]> {
     const sock = this.cfg.gateway.socket;
     await mkdir(dirname(sock), { recursive: true, mode: 0o700 });
     await chmod(dirname(sock), 0o700).catch(() => {});
@@ -273,7 +277,10 @@ export class Gateway {
     // idleTimeout 0: a response may wait on the upstream (first event, retries) longer than Bun's 10s default.
     const server = Bun.serve({ unix: sock, fetch: (r: Request) => this.fetch(r), idleTimeout: 0 } as unknown as Parameters<typeof Bun.serve>[0]);
     await chmod(sock, 0o600).catch(() => {});
-    return server;
+    const servers = [server];
+    const tcp = this.cfg.gateway.listen;
+    if (tcp) servers.push(Bun.serve({ hostname: tcp.host, port: tcp.port, fetch: (r: Request) => this.fetch(r), idleTimeout: 0 } as unknown as Parameters<typeof Bun.serve>[0]));
+    return servers;
   }
 }
 
@@ -327,11 +334,11 @@ export async function main(configPath?: string) {
   catch (e) { console.error(e instanceof ConfigError ? e.message : String(e)); process.exit(78); }
   const gw = new Gateway(cfg);
   gw.watch();
-  const server = await gw.listen();
+  const servers = await gw.listen();
   for (const w of cfg.warnings) console.log(`config: warning: ${w}`);
   if (cfg.omp) for (const l of describeSdk(readState())) console.log(l);
-  console.log(`subagent-models gateway listening on ${cfg.gateway.socket} (config ${cfg.path}; models of ours: ${Object.keys(cfg.models).join(", ") || "none"}${cfg.omp ? `; omp-native: ${cfg.ompProviders.length} omp providers via SDK ${cfg.ompRuntime?.version}` : ""})`);
-  const stop = () => { console.log("stopping"); gw.stop(); server.stop(true); unlink(cfg.gateway.socket).catch(() => {}).finally(() => process.exit(0)); };
+  console.log(`subagent-models gateway listening on ${cfg.gateway.socket}${cfg.gateway.listen ? ` and ${cfg.gateway.listen.host}:${cfg.gateway.listen.port}` : ""} (config ${cfg.path}; models of ours: ${Object.keys(cfg.models).join(", ") || "none"}${cfg.omp ? `; omp-native: ${cfg.ompProviders.length} omp providers via SDK ${cfg.ompRuntime?.version}` : ""})`);
+  const stop = () => { console.log("stopping"); gw.stop(); for (const s of servers) s.stop(true); unlink(cfg.gateway.socket).catch(() => {}).finally(() => process.exit(0)); };
   process.on("SIGTERM", stop);
   process.on("SIGINT", stop);
 }

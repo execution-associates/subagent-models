@@ -97,7 +97,7 @@ export type AgentDef = {
 export type Config = {
   path: string;
   mtimeMs: number;
-  gateway: { socket: string; accessLog: string; captureDir: string | null; pingIntervalSeconds: number };
+  gateway: { socket: string; listen: { host: string; port: number } | null; accessLog: string; captureDir: string | null; pingIntervalSeconds: number };
   secrets: { opServiceAccountTokenFile: string | null; keyCacheSeconds: number };
   timeouts: Timeouts;
   retry: {
@@ -288,9 +288,10 @@ export function validate(doc: unknown, file = "config.yml", mtimeMs = 0, omp?: O
   known(doc, ["gateway", "secrets", "timeouts", "retry", "providers", "agents", "omp"], "(top level)", problems);
 
   const g = isObj(doc.gateway) ? doc.gateway : doc.gateway === undefined ? {} : (problems.push("gateway: must be a map"), {});
-  known(g, ["socket", "accessLog", "captureDir", "pingIntervalSeconds"], "gateway", problems);
+  known(g, ["socket", "listen", "accessLog", "captureDir", "pingIntervalSeconds"], "gateway", problems);
   const gateway = {
     socket: expandPath(str(g.socket, "gateway.socket", problems, null) ?? defaultSocketPath()),
+    listen: parseListen(g.listen, problems),
     accessLog: expandPath(str(g.accessLog, "gateway.accessLog", problems, null) ?? "~/.local/state/subagent-models/access.jsonl"),
     captureDir: ((c) => (c ? expandPath(c) : null))(str(g.captureDir, "gateway.captureDir", problems, null)),
     pingIntervalSeconds: num(g.pingIntervalSeconds, "gateway.pingIntervalSeconds", problems, 15, 1),
@@ -517,6 +518,25 @@ export async function loadConfig(file = defaultConfigPath(), opts: ResolveOption
     throw new ConfigError([`cannot read the file: ${(e as Error).message}. Copy config.example.yml there to start`], file);
   }
   return resolve(parseYaml(text, file), file, mtimeMs, opts);
+}
+
+const LOOPBACK = new Set(["127.0.0.1", "::1", "localhost"]);
+
+/**
+ * `gateway.listen`: an extra TCP listener, `host:port` or a bare port (127.0.0.1).
+ * Loopback only: the gateway has no auth of its own, so whatever publishes it
+ * (a cloudflared tunnel behind Cloudflare Access) must be the gate.
+ */
+function parseListen(v: unknown, problems: string[]): { host: string; port: number } | null {
+  if (v === undefined || v === null) return null;
+  const raw = typeof v === "number" ? `127.0.0.1:${v}` : typeof v === "string" ? v : null;
+  if (raw === null) { problems.push("gateway.listen: must be host:port or a port number"); return null; }
+  const m = /^(?:\[([^\]]+)\]|([^:]+)):(\d{1,5})$/.exec(raw.includes(":") ? raw : `127.0.0.1:${raw}`);
+  const port = m ? Number(m[3]) : NaN;
+  if (!m || !(port >= 1 && port <= 65535)) { problems.push(`gateway.listen: ${raw} is not host:port`); return null; }
+  const host = (m[1] ?? m[2])!;
+  if (!LOOPBACK.has(host)) { problems.push(`gateway.listen: ${host} is not a loopback address (127.0.0.1, ::1, localhost); the gateway has no auth, so publish it through a tunnel with its own gate`); return null; }
+  return { host, port };
 }
 
 /** What the mod needs, as plain JSON (no keys: apiKey sources are not included). */

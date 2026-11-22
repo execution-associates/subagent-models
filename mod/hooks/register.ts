@@ -2,16 +2,27 @@
 //
 // Every model request the engine sends passes `http.fetch`. A request whose
 // `model` is one of the configured ids (refuseless/deepseek-v4.1-flash-fast, ...)
-// is sent to the local gateway instead of Anthropic, unchanged but for its URL
+// is sent to the gateway instead of Anthropic (the local socket, or the HTTPS URL in
+// SUBAGENT_MODELS_URL, whose /mod-config then stands in for the local config file), unchanged but for its URL
 // and its credentials, which stay behind. Every other request goes on untouched.
 // When the gateway's fallback chain lands on a real Claude model, it answers with
 // a hand-back header and this hook re-sends the original request to Anthropic with
 // that model, on the session's own login.
 import type { EngineInterface, Register } from "claude-code";
-import { type ModView, agentSpec, errorValue, messagesPath, routeFetch, routedModel } from "./route";
+import { type ModView, type Remote, agentSpec, errorValue, messagesPath, parseRemoteConfig, remoteFrom, routeFetch, routedModel } from "./route";
 
 let view: ModView | null = null;
 let configError: string | null = null;
+let remote: Remote | null = null;
+
+async function readRemote($: EngineInterface, r: Remote) {
+  try {
+    const res = await $.http.fetch(`${r.base}/mod-config`, { method: "GET", headers: r.headers });
+    return parseRemoteConfig(r.base, res);
+  } catch (e) {
+    return { ok: false as const, error: `the gateway at ${r.base} is not answering (${(e as Error)?.message ?? e})` };
+  }
+}
 
 async function configPath($: EngineInterface): Promise<string> {
   const explicit = await $.env.get("SUBAGENT_MODELS_CONFIG");
@@ -50,13 +61,21 @@ let stamp = "";
 let warned = new Set<string>();
 
 async function refresh($: EngineInterface, { force = false } = {}) {
-  const path = await configPath($);
-  // Our file, plus every omp file the last good config was built from.
-  const paths = view && view.path === path ? [path, ...(view.sources ?? []).filter(p => p !== path)] : [path];
-  const now = await stampOf($, paths);
-  if (!force && now === stamp) return;
-  stamp = now;
-  const r = await readConfig($, path);
+  let r: Awaited<ReturnType<typeof readConfig>>;
+  let path = "";
+  if (remote) {
+    r = await readRemote($, remote);
+    // Unchanged since the last poll: nothing to register again.
+    if (r.ok && !force && view && JSON.stringify(r.config) === JSON.stringify(view)) return;
+  } else {
+    path = await configPath($);
+    // Our file, plus every omp file the last good config was built from.
+    const paths = view && view.path === path ? [path, ...(view.sources ?? []).filter(p => p !== path)] : [path];
+    const now = await stampOf($, paths);
+    if (!force && now === stamp) return;
+    stamp = now;
+    r = await readConfig($, path);
+  }
   if (!r.ok) {
     if (r.error !== configError) $.ui.log(`subagent-models: ${r.error}${view ? " (keeping the previous config)" : ""}`);
     configError = r.error;
@@ -70,7 +89,7 @@ async function refresh($: EngineInterface, { force = false } = {}) {
   }
   configError = null;
   view = r.config;
-  stamp = await stampOf($, [path, ...(view.sources ?? []).filter(p => p !== path)]);
+  if (!remote) stamp = await stampOf($, [path, ...(view.sources ?? []).filter(p => p !== path)]);
   await $.store.set("lastGoodConfig", view).catch(() => {});
   for (const w of view.warnings ?? []) if (!warned.has(w)) { warned.add(w); $.ui.log(`subagent-models: ${w}`); }
   for (const a of view.agents) {
@@ -84,8 +103,16 @@ async function refresh($: EngineInterface, { force = false } = {}) {
 
 export const register: Register = on => {
   on("session.start", async ($, e, next) => {
+    try {
+      remote = remoteFrom({
+        url: await $.env.get("SUBAGENT_MODELS_URL"),
+        accessId: await $.env.get("SUBAGENT_MODELS_ACCESS_ID"),
+        accessSecret: await $.env.get("SUBAGENT_MODELS_ACCESS_SECRET"),
+      });
+    } catch (err) { $.ui.log(`subagent-models: ${(err as Error).message}`); }
     await refresh($, { force: true }).catch(err => $.ui.log(`subagent-models: ${(err as Error).message}`));
-    $.clock.every(3000, () => { refresh($).catch(() => {}); });
+    // A local file is a cheap stat; a remote gateway is a request, so poll it less often.
+    $.clock.every(remote ? 30_000 : 3000, () => { refresh($).catch(() => {}); });
     return next(e);
   });
 
@@ -99,7 +126,7 @@ export const register: Register = on => {
 
   on("http.fetch", async ($, e, next) => {
     if (next.origin?.plugin !== "engine" || !view) return next(e);
-    return routeFetch(e, view, x => next(x), msg => $.ui.log(msg));
+    return routeFetch(e, view, x => next(x), msg => $.ui.log(msg), remote);
   }).catch(($, e, next) => {
     // The hook failed. A request of ours must not slip through to Anthropic as is.
     if (next.called) return next(e);

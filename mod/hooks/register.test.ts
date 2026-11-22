@@ -2,7 +2,7 @@
 // The test's own hooks sit beneath the mod and stand for the engine: the network
 // (http.fetch), the host (process.run: the gateway's mod-config CLI) and the disk.
 import { describe, expect, test } from "claude-code/testing";
-import { FALLBACK_HEADER, EFFORT_HEADER, claudeBody, routedModel, messagesPath, gatewayHeaders, agentSpec, routeFetch, type ModView } from "./route";
+import { FALLBACK_HEADER, EFFORT_HEADER, claudeBody, routedModel, messagesPath, gatewayHeaders, agentSpec, routeFetch, remoteFrom, parseRemoteConfig, type ModView } from "./route";
 
 const SOCKET = "/run/user/1000/subagent-models/gateway.sock";
 const VIEW: ModView = {
@@ -105,6 +105,62 @@ describe("http.fetch routing (routeFetch, with send standing for next)", () => {
     expect(sent.length).toBe(1);
     expect(r.value.status).toBe(503);
     expect(JSON.parse(r.value.text).error.message).toContain("does not name; refused");
+  });
+});
+
+describe("remote gateway (SUBAGENT_MODELS_URL)", () => {
+  const REMOTE = remoteFrom({ url: "https://llm-gateway.example.test/", accessId: "id.access", accessSecret: "s3cret" })!;
+
+  test("remoteFrom reads the URL and the Access token", () => {
+    expect(REMOTE).toEqual({ base: "https://llm-gateway.example.test", headers: { "CF-Access-Client-Id": "id.access", "CF-Access-Client-Secret": "s3cret" } });
+    expect(remoteFrom({})).toBe(null);
+    expect(remoteFrom({ url: "https://g.test" })).toEqual({ base: "https://g.test", headers: {} });
+    expect(() => remoteFrom({ url: "/run/gateway.sock" })).toThrow();
+  });
+
+  test("a routed request goes to the URL with the Access headers, without Claude credentials", async () => {
+    const sent: any[] = [];
+    const b = body("fake/model-a");
+    const r: any = await routeFetch({ url: URL, init: { method: "POST", headers: { ...headers, "x-api-key": "sk-ant-x" }, body: b, compress: "gzip" } }, VIEW, async e => { sent.push(e); return ok(); }, () => {}, REMOTE);
+    expect(sent.length).toBe(1);
+    expect(sent[0].url).toBe("https://llm-gateway.example.test/v1/messages?beta=true");
+    expect(sent[0].init.socketPath).toBe(undefined);
+    expect(sent[0].init.headers["CF-Access-Client-Id"]).toBe("id.access");
+    expect(sent[0].init.headers.authorization).toBe(undefined);
+    expect(sent[0].init.headers["x-api-key"]).toBe(undefined);
+    expect(r.value.status).toBe(200);
+  });
+
+  test("an unreachable remote gateway is a loud 503 naming the URL", async () => {
+    const r: any = await routeFetch({ url: URL, init: { method: "POST", headers, body: body("fake/model-a") } }, VIEW, async () => { throw new Error("ECONNREFUSED"); }, () => {}, REMOTE);
+    expect(r.value.status).toBe(503);
+    expect(JSON.parse(r.value.text).error.message).toContain("https://llm-gateway.example.test");
+  });
+
+  test("parseRemoteConfig", () => {
+    expect(parseRemoteConfig("https://g", { status: 200, text: JSON.stringify({ ok: true, config: VIEW }) })).toEqual({ ok: true, config: VIEW });
+    const denied = parseRemoteConfig("https://g", { status: 403, text: "" });
+    expect(denied.ok).toBe(false);
+    expect((denied as any).error).toContain("SUBAGENT_MODELS_ACCESS_ID");
+    expect((parseRemoteConfig("https://g", { status: 200, text: "<html>login</html>" }) as any).error).toContain("login page");
+  });
+
+  test("at session start the mod loads its config from the URL and registers its agents", async ($, on) => {
+    const sent: any[] = [];
+    const env: Record<string, string> = { HOME: "/home/t", SUBAGENT_MODELS_URL: "https://llm-gateway.example.test", SUBAGENT_MODELS_ACCESS_ID: "id.access", SUBAGENT_MODELS_ACCESS_SECRET: "s3cret" };
+    on("session.start", async (_$: any, e: any) => ({ cwd: e.cwd }));
+    on("ui.log", async (_$: any, e: any) => { sent.push({ log: e }); return { value: undefined }; });
+    on("clock.every", async () => ({ value: undefined }));
+    on("env.get", async (_$: any, e: any) => ({ value: env[e.name] }));
+    on("process.run", async () => { throw new Error("remote mode must not run the local CLI"); });
+    on("agent.register", async (_$: any, e: any) => { sent.push({ register: e }); return { value: { agent: `subagent-models:${e.name}` } }; });
+    on("http.fetch", async (_$: any, e: any) => { sent.push(e); return { value: { status: 200, ok: true, headers: {}, text: JSON.stringify({ ok: true, config: VIEW }) } }; });
+    await $.session.start({ cwd: "/", surface: null, isInteractive: false });
+    const fetches = sent.filter(s => s.url);
+    if (!fetches.length) throw new Error(JSON.stringify(sent));
+    expect(fetches[0].url).toBe("https://llm-gateway.example.test/mod-config");
+    expect(fetches[0].init.headers["CF-Access-Client-Secret"]).toBe("s3cret");
+    expect(sent.filter(s => s.register).map(s => s.register.name)).toEqual(["worker"]);
   });
 });
 

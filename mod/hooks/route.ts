@@ -144,6 +144,30 @@ export function agentSpec(a: ModView["agents"][number], view: ModView): Record<s
   return { ...spec, ...a.extra };
 }
 
+/** A gateway reached over HTTPS (SUBAGENT_MODELS_URL) instead of the local socket. */
+export type Remote = { base: string; headers: Record<string, string> };
+
+/** The remote gateway from the session's environment, or null for the local socket. */
+export function remoteFrom(env: { url?: string; accessId?: string; accessSecret?: string }): Remote | null {
+  const url = env.url?.trim();
+  if (!url) return null;
+  if (!/^https?:\/\/[^/]+/.test(url)) throw new Error(`SUBAGENT_MODELS_URL must be an http(s) URL, not ${url}`);
+  const headers: Record<string, string> = {};
+  // Cloudflare Access service token: Cloudflare checks it before anything reaches the gateway.
+  if (env.accessId && env.accessSecret) { headers["CF-Access-Client-Id"] = env.accessId; headers["CF-Access-Client-Secret"] = env.accessSecret; }
+  return { base: url.replace(/\/+$/, ""), headers };
+}
+
+/** The mod-config answer of a remote gateway, parsed like the local CLI's. */
+export function parseRemoteConfig(base: string, res: { status: number; text?: string }): { ok: true; config: ModView } | { ok: false; error: string } {
+  if (res.status !== 200) return { ok: false, error: `the gateway at ${base} answered HTTP ${res.status} for /mod-config${res.status === 401 || res.status === 403 || res.status === 302 ? " (check SUBAGENT_MODELS_ACCESS_ID and SUBAGENT_MODELS_ACCESS_SECRET)" : ""}` };
+  try {
+    const j = JSON.parse(res.text ?? "");
+    if (j?.ok && j.config) return { ok: true, config: j.config as ModView };
+    return { ok: false, error: `the gateway at ${base}: ${j?.error ?? "no config in its answer"}` };
+  } catch { return { ok: false, error: `the gateway at ${base} did not answer /mod-config with JSON (a login page means the Access token is missing or wrong)` }; }
+}
+
 type FetchEvent = { url: string; init?: { headers?: Record<string, string>; body?: unknown; compress?: unknown; socketPath?: string; auth?: string; method?: string } };
 type FetchResult = { value: { status: number; headers: Record<string, string> } & Record<string, unknown> } | { deny: string } | Record<string, unknown>;
 
@@ -153,7 +177,7 @@ type FetchResult = { value: { status: number; headers: Record<string, string> } 
  * config names is re-sent as the original request with the model swapped; every
  * failure to reach the gateway is a loud error; everything else goes on as it came.
  */
-export async function routeFetch<E extends FetchEvent>(e: E, view: ModView, send: (e: E) => Promise<any>, log: (m: string) => void = () => {}): Promise<any> {
+export async function routeFetch<E extends FetchEvent>(e: E, view: ModView, send: (e: E) => Promise<any>, log: (m: string) => void = () => {}, remote: Remote | null = null): Promise<any> {
   const body = e.init?.body;
   if (typeof body !== "string") return send(e);
   const path = messagesPath(e.url);
@@ -161,11 +185,14 @@ export async function routeFetch<E extends FetchEvent>(e: E, view: ModView, send
   const model = routedModel(body, view);
   if (!model) return send(e);
 
-  const socket = view.socket;
+  const socket = remote ? remote.base : view.socket;
   const { compress: _c, socketPath: _s, auth: _a, ...init } = e.init ?? {};
+  const to = remote
+    ? { ...e, url: `${remote.base}${path}`, init: { ...init, headers: { ...gatewayHeaders(e.init?.headers), ...remote.headers }, body } }
+    : { ...e, url: `http://subagent-models${path}`, init: { ...init, headers: gatewayHeaders(e.init?.headers), body, socketPath: socket } };
   let res: FetchResult;
   try {
-    res = await send({ ...e, url: `http://subagent-models${path}`, init: { ...init, headers: gatewayHeaders(e.init?.headers), body, socketPath: socket } });
+    res = await send(to);
   } catch (err) {
     return errorValue(503, `subagent-models: the gateway is not answering on ${socket} (${(err as Error)?.message ?? err}). Nothing was sent to Claude. Check it with: subagent-models status; subagent-models logs`);
   }

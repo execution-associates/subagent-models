@@ -150,6 +150,17 @@ describe("chain", () => {
     expect(j.error.message).toContain("fake/model-b: fake (model-b) answered HTTP 500: boom");
   });
 
+  test("GET /mod-config serves the routing table a remote mod loads", async () => {
+    const r = await gw().fetch(new Request("http://gw/mod-config"));
+    expect(r.status).toBe(200);
+    const j = (await r.json()) as any;
+    expect(j.ok).toBe(true);
+    expect(j.reloadError).toBe(null);
+    expect(Object.keys(j.config.models)).toContain("fake/model-a");
+    expect(j.config.claudeFallbacks).toBeDefined();
+    expect(JSON.stringify(j)).not.toContain("apiKey");
+  });
+
   test("a context-length 400 becomes Anthropic's prompt-too-long wording (Claude Code compacts on it)", async () => {
     script.set("model-a", ["ctx400"]);
     const r = await call(gw());

@@ -16,6 +16,9 @@
 gateway:
   # Unix socket, owner-only. Default: $XDG_RUNTIME_DIR/subagent-models/gateway.sock
   # socket: ${XDG_RUNTIME_DIR}/subagent-models/gateway.sock
+  # Also listen on loopback TCP, as the origin of a tunnel that gates it (Cloudflare
+  # Access), for remote sessions that set SUBAGENT_MODELS_URL. Loopback only.
+  # listen: 127.0.0.1:8110
   accessLog: ~/.local/state/subagent-models/access.jsonl
   # Write each translated upstream request body here (debugging; holds conversation text).
   # captureDir: ~/.local/state/subagent-models/capture
