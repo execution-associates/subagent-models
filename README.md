@@ -12,7 +12,16 @@ Anthropic-compatible API, with retries and fallback chains.
 
 ## Install
 
-Needs [mise](https://mise.jdx.dev) and Claude Code. Works on Linux and macOS.
+Needs Claude Code, on Linux or macOS. There are three ways to install, depending on
+where the gateway runs:
+
+| You want | Needs | Path |
+| -- | -- | -- |
+| the gateway on this machine, upgraded with one command | mise | [With mise](#with-mise) |
+| the gateway on this machine, without mise | bun, git | [From a checkout](#from-a-checkout) |
+| a gateway someone already runs (claude.ai/code, or a shared one) | nothing | [Remote gateway only](#remote-gateway-only) |
+
+### With mise
 
 ```sh
 mise use -g bun github:execution-associates/subagent-models
@@ -21,7 +30,21 @@ $EDITOR ~/.config/subagent-models/config.yml
 subagent-models check         # validate; prints models, chains and agents
 ```
 
-Then load the mod in Claude Code, in `~/.claude/settings.json`:
+### From a checkout
+
+The gateway's only runtime is [bun](https://bun.sh), installed any way you like.
+
+```sh
+git clone https://github.com/execution-associates/subagent-models
+subagent-models/bin/subagent-models install
+$EDITOR ~/.config/subagent-models/config.yml
+subagent-models/bin/subagent-models check
+```
+
+`install` links the checkout, so the service and the mod run that working tree, and an
+upgrade is `git pull` then `install` again.
+
+Either way, load the mod in Claude Code, in `~/.claude/settings.json`:
 
 ```json
 { "env": { "CLAUDE_CODE_PLUGIN_DIRS": "~/.local/share/subagent-models/app/mod" } }
@@ -29,17 +52,23 @@ Then load the mod in Claude Code, in `~/.claude/settings.json`:
 
 and call an agent from your config: `Agent(subagent_type: "subagent-models:<name>", …)`.
 
+### Remote gateway only
+
+With `SUBAGENT_MODELS_URL` set, the mod loads everything from the gateway over HTTPS and
+never runs locally, so there is no gateway, bun or config to install. Enable the plugin
+from this repo's marketplace and set the three variables in
+[Remote sessions](#remote-sessions). [Claude desktop and claude.ai/code](#claude-desktop-and-claudeaicode)
+has the settings for a cloud session.
+
 <details>
-<summary>Private repo, upgrades, and installing from a checkout</summary>
+<summary>Private repo, upgrades, one session, removal</summary>
 
 - **Private repo:** mise needs a GitHub token that can read it, in `GITHUB_TOKEN` or
-  `MISE_GITHUB_TOKEN`.
-- **Upgrade:** `mise upgrade github:execution-associates/subagent-models`, then
+  `MISE_GITHUB_TOKEN`; a clone or a cloud session needs ordinary GitHub access to it.
+- **Upgrade (mise):** `mise upgrade github:execution-associates/subagent-models`, then
   `subagent-models install` again. `install` is idempotent: it re-points
   `~/.local/share/subagent-models/app` at the new version, rewrites the service files
   and restarts the gateway. It never overwrites an existing config.
-- **From a checkout:** `bin/subagent-models install` links the checkout instead, so
-  the service and the mod run your working tree.
 - **One session only:** `claude --plugin-dir ~/.local/share/subagent-models/app/mod`.
 - **Remove:** `subagent-models uninstall` stops and removes the service and the link.
   Config and state stay.
@@ -285,7 +314,7 @@ conversations in the desktop app or on claude.ai have no subagents and load no p
 `CLAUDE_CODE_PLUGIN_DIRS` entry in `~/.claude/settings.json`. An app launched from the
 Dock does not read your shell profile, so `bun` from mise may not be on its `PATH`. The
 mod falls back to a login shell, and if that also fails, set `SUBAGENT_MODELS_BUN` to
-bun's full path (`mise which bun`) in the same `env` block. The desktop app can also
+bun's full path (`command -v bun` in a terminal) in the same `env` block. The desktop app can also
 use a remote gateway instead, the way the web app does.
 
 **claude.ai/code (cloud sessions).** A cloud session runs in a fresh container with no
