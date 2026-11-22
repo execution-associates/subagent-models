@@ -77,7 +77,7 @@ async function refresh($: EngineInterface, { force = false } = {}) {
     r = await readConfig($, path);
   }
   if (!r.ok) {
-    if (r.error !== configError) $.ui.log(`subagent-models: ${r.error}${view ? " (keeping the previous config)" : ""}`);
+    if (r.error !== configError) $.ui.log(`${r.error}${view ? " (keeping the previous config)" : ""}`);
     configError = r.error;
     if (!view) {
       // No good config this session yet: fall back to the last one that worked, so
@@ -91,12 +91,12 @@ async function refresh($: EngineInterface, { force = false } = {}) {
   view = r.config;
   if (!remote) stamp = await stampOf($, [path, ...(view.sources ?? []).filter(p => p !== path)]);
   await $.store.set("lastGoodConfig", view).catch(() => {});
-  for (const w of view.warnings ?? []) if (!warned.has(w)) { warned.add(w); $.ui.log(`subagent-models: ${w}`); }
+  for (const w of view.warnings ?? []) if (!warned.has(w)) { warned.add(w); $.ui.log(`${w}`); }
   for (const a of view.agents) {
     try {
       await $.agent.register(agentSpec(a, view) as Parameters<EngineInterface["agent"]["register"]>[0]);
     } catch (e) {
-      $.ui.log(`subagent-models: agent ${a.name} not registered: ${(e as Error).message}`);
+      $.ui.log(`agent ${a.name} not registered: ${(e as Error).message}`);
     }
   }
 }
@@ -109,8 +109,8 @@ export const register: Register = on => {
         accessId: await $.env.get("SUBAGENT_MODELS_ACCESS_ID"),
         accessSecret: await $.env.get("SUBAGENT_MODELS_ACCESS_SECRET"),
       });
-    } catch (err) { $.ui.log(`subagent-models: ${(err as Error).message}`); }
-    await refresh($, { force: true }).catch(err => $.ui.log(`subagent-models: ${(err as Error).message}`));
+    } catch (err) { $.ui.log(`${(err as Error).message}`); }
+    await refresh($, { force: true }).catch(err => $.ui.log(`${(err as Error).message}`));
     // A local file is a cheap stat; a remote gateway is a request, so poll it less often.
     $.clock.every(remote ? 30_000 : 3000, () => { refresh($).catch(() => {}); });
     return next(e);

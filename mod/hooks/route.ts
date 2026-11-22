@@ -212,6 +212,6 @@ export async function routeFetch<E extends FetchEvent>(e: E, view: ModView, send
   if (!view.claudeFallbacks[model]?.includes(claude)) {
     return errorValue(503, `subagent-models: the gateway handed ${model} to Claude model ${claude}, which the config's fallback chain for ${model} does not name; refused`);
   }
-  log(`subagent-models: ${model} fell back to Claude (${claude})`);
+  log(`${model} fell back to Claude (${claude})`);
   return send({ ...e, init: { ...e.init, body: claudeBody(body, claude, v.headers[EFFORT_HEADER] ?? null) } });
 }

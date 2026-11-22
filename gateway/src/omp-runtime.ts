@@ -13,7 +13,7 @@
 // Everything the rest of the gateway needs goes through the OmpRuntime interface, so
 // tests use a fake and a gateway without the block never loads the SDK.
 import { existsSync, readFileSync } from "node:fs";
-import { currentSdkDir, installedOmp, stateDir } from "./omp-sdk";
+import { currentSdkDir, installedOmp, readState, stateDir } from "./omp-sdk";
 import { startSyncService } from "./service";
 
 /** What the gateway knows about one omp model. */
@@ -114,7 +114,13 @@ export function loadOmpRuntime(agentDir: string, versionCheck: "exact" | "warn",
   const omp = installedOmp(agentDir).version;
   if (sdk && omp && omp !== sdk) {
     kickSync(`omp is ${omp}, SDK is ${sdk}`);
-    const msg = `omp: the installed omp is ${omp} but the omp SDK in use is ${sdk}; serving with ${sdk} while the matching SDK is synced`;
+    // A failed sync must not read as progress. Its error stays out of the message: it
+    // names a per-attempt staging path, and the mod shows each distinct warning once.
+    const st = readState();
+    const failed = st.phase === "failed" && st.target === omp && st.lastError;
+    const msg = failed
+      ? `omp: the installed omp is ${omp} but the omp SDK in use is ${sdk}; serving with ${sdk} because the ${omp} SDK failed to install or load; the sync retries, and takes the next omp release (why: subagent-models omp-sdk status)`
+      : `omp: the installed omp is ${omp} but the omp SDK in use is ${sdk}; serving with ${sdk} while the matching SDK is synced`;
     if (versionCheck === "exact") return Promise.reject(new OmpRuntimeError(`${msg.split(";")[0]}; omp.versionCheck is exact, so omp-routed models are refused until the sync finishes`));
     warn(msg);
   }
