@@ -12,19 +12,8 @@ import type { OmpRuntime } from "./omp-runtime";
 import { ompResolves } from "./config-core";
 export { ompResolves };
 
-export type OmpBlock = {
-  dir: string;
-  /** Optional restriction: only these omp providers route (default: all but `anthropic`). */
-  providers: string[] | null;
-  fallbackChains: boolean;
-  agents: string[];
-  versionCheck: "exact" | "warn";
-};
-
-export type Origin = "ours" | "omp" | "ours over omp";
-export type Source = { path: string; mtimeMs: number };
-/** A skipped entry; `about` names the chain or agent it concerns, so a warning about something our own file overrides can be dropped. */
-export type OmpWarning = { about?: string; text: string };
+export type { OmpBlock, OmpWarning, Origin, Source } from "./omp-types";
+import type { OmpBlock, OmpWarning, Origin, Source } from "./omp-types";
 
 export type OmpImport = {
   /** A fragment in our config shape: retry (chains), agents. */

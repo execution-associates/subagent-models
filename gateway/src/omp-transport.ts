@@ -3,7 +3,7 @@
 import type { CImage, Canonical, CText } from "./canonical";
 import { makeSignature, portableSchema } from "./canonical";
 import type { Level } from "./config-core";
-import type { OmpEvent, OmpModelInfo, OmpRuntime } from "./omp-runtime";
+import type { OmpEvent, OmpModelInfo, OmpRuntime } from "./omp-types";
 import { type AnthropicEvent, type ErrorClass, UpstreamError } from "./upstream";
 
 const now = () => Date.now();

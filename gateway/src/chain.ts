@@ -9,7 +9,7 @@
 import type { Canonical } from "./canonical";
 import { withIdentity } from "./canonical";
 import { type Config, type Level, type ModelDef, type ProviderDef, type Target, ompResolves } from "./config-core";
-import type { OmpModelInfo } from "./omp-runtime";
+import type { OmpModelInfo } from "./omp-types";
 import { openOmp } from "./omp-transport";
 import { openAnthropic } from "./anthropic";
 import { openOpenAI } from "./openai";

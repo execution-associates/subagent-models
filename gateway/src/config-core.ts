@@ -2,8 +2,8 @@
 // API: the Bun gateway (config.ts) and the hosted service share it. Every error
 // names the path of the offending key, so whoever edits the config can fix it from
 // the message alone.
-import type { OmpBlock, Origin, Source } from "./omp";
-import type { OmpModelInfo, OmpRuntime } from "./omp-runtime";
+import type { OmpBlock, Origin, Source } from "./omp-types";
+import type { OmpModelInfo, OmpRuntime } from "./omp-types";
 
 export const LEVELS = ["off", "minimal", "low", "medium", "high", "xhigh", "max"] as const;
 export type Level = (typeof LEVELS)[number];

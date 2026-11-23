@@ -16,64 +16,8 @@ import { existsSync, readFileSync } from "node:fs";
 import { currentSdkDir, installedOmp, readState, stateDir } from "./omp-sdk";
 import { startSyncService } from "./service";
 
-/** What the gateway knows about one omp model. */
-export type OmpModelInfo = {
-  /** `<provider>/<model id>`, the id Claude Code sends. */
-  id: string;
-  provider: string;
-  modelId: string;
-  name: string;
-  api: string;
-  contextWindow: number;
-  maxTokens: number;
-  reasoning: boolean;
-  input: ("text" | "image")[];
-  /** A subscription login (ChatGPT, Claude, ...) rather than an API key. */
-  subscription: boolean;
-  hasAuth: boolean;
-};
-
-/** pi-ai's streaming events, as far as the gateway reads them. */
-export type OmpEvent =
-  | { type: "start" }
-  | { type: "text_start" | "thinking_start" | "toolcall_start"; contentIndex: number }
-  | { type: "text_delta" | "thinking_delta" | "toolcall_delta"; contentIndex: number; delta: string }
-  | { type: "text_end"; contentIndex: number; content: string }
-  | { type: "thinking_end"; contentIndex: number; content: string; partial?: { content?: any[] } }
-  | { type: "toolcall_end"; contentIndex: number; toolCall: { id: string; name: string; arguments: Record<string, unknown> } }
-  | { type: "done"; reason: "stop" | "length" | "toolUse"; message: OmpAssistantMessage }
-  | { type: "error"; reason: "aborted" | "error"; error: OmpAssistantMessage }
-  | { type: string; [k: string]: unknown };
-
-export type OmpAssistantMessage = {
-  content: any[];
-  usage?: { input?: number; output?: number; cacheRead?: number; cacheWrite?: number };
-  stopReason?: string;
-  errorMessage?: string;
-  errorStatus?: number;
-};
-
-export type OmpStreamOptions = {
-  signal: AbortSignal;
-  reasoning?: string;
-  disableReasoning?: boolean;
-  maxTokens?: number;
-  temperature?: number;
-  topP?: number;
-  stopSequences?: string[];
-  sessionId?: string;
-};
-
-export interface OmpRuntime {
-  readonly version: string;
-  /** The SDK copy's directory (tests: anything). */
-  readonly dir?: string;
-  /** Every provider omp has a model for. */
-  providers(): string[];
-  find(provider: string, modelId: string): OmpModelInfo | undefined;
-  /** Streams one model call. `context` is pi-ai's Context (see omp-transport.ts). */
-  stream(model: OmpModelInfo, context: unknown, options: OmpStreamOptions): AsyncIterable<OmpEvent>;
-}
+export type { OmpAssistantMessage, OmpEvent, OmpModelInfo, OmpRuntime, OmpStreamOptions } from "./omp-types";
+import type { OmpModelInfo, OmpRuntime } from "./omp-types";
 
 export class OmpRuntimeError extends Error {}
 
