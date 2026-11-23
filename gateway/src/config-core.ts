@@ -142,6 +142,11 @@ export type ValidateOptions = {
    * a file), base URLs must be public https, and there is no socket, log or capture.
    */
   hosted?: boolean;
+  /**
+   * Hosted only: base URLs exempt from the public-https rule. For a test's local
+   * fake upstream; a deployed service passes nothing.
+   */
+  allowBaseUrl?: (url: string) => boolean;
 };
 
 const DEFAULT_EFFORT_MAP: Record<Level, string | null> = {
@@ -334,7 +339,7 @@ export function validate(doc: unknown, file = "config.yml", mtimeMs = 0, omp?: O
     if (api === "openai-responses") problems.push(`${at}.api: openai-responses is not implemented yet (the seam is gateway/src/upstream.ts); use openai-completions`);
     const baseUrl = (str(pv.baseUrl, `${at}.baseUrl`, problems, "", true) ?? "").replace(/\/+$/, "");
     if (baseUrl && !/^https?:\/\//.test(baseUrl)) problems.push(`${at}.baseUrl: must start with http:// or https://`);
-    else if (baseUrl && hosted) { const why = hostedUrlProblem(baseUrl); if (why) problems.push(`${at}.baseUrl: ${why}`); }
+    else if (baseUrl && hosted && !opts.allowBaseUrl?.(baseUrl)) { const why = hostedUrlProblem(baseUrl); if (why) problems.push(`${at}.baseUrl: ${why}`); }
     const apiKey = str(pv.apiKey, `${at}.apiKey`, problems, null);
     if (apiKey && !hosted && /^(sk-|sk_|ey[A-Za-z0-9])/.test(apiKey)) problems.push(`${at}.apiKey: looks like a literal key; use an op:// reference, a !command, or the name of an environment variable`);
     providers[pname] = { name: pname, api, baseUrl, apiKey, headers: strMap(pv.headers, `${at}.headers`, problems) };

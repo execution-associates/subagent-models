@@ -39,6 +39,8 @@ test("hosted validate refuses private, plain-http and IP base URLs, and the Bun-
   expect(() => validate(tenant("https://api.acme.example/v1", { secrets: {} }), "u", 0, undefined, { hosted: true })).toThrow(ConfigError);
   expect(() => validate(tenant("https://api.acme.example/v1", { gateway: { socket: "/tmp/x" } }), "u", 0, undefined, { hosted: true })).toThrow(/pingIntervalSeconds/);
   expect(hostedUrlProblem("https://api.deepseek.com")).toBe(null);
+  // a test's fake upstream, exempted explicitly
+  expect(validate(tenant("http://127.0.0.1:9/v1"), "u", 0, undefined, { hosted: true, allowBaseUrl: u => u.startsWith("http://127.0.0.1:9") }).providers.acme!.baseUrl).toBe("http://127.0.0.1:9/v1");
 });
 
 test("StaticKeys serves keys by provider name and offers them for scrubbing", async () => {
