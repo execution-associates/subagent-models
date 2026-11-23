@@ -2,6 +2,7 @@
   "name": "subagent-models",
   "private": true,
   "description": "The gateway core (subagent-models/core) for the hosted service: TypeScript source with no dependencies and no runtime APIs beyond the web platform.",
+  "license": "LicenseRef-EXA-SL-1.0",
   "type": "module",
   "exports": {
     "./core": "./gateway/src/core/index.ts"

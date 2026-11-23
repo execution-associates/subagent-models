@@ -5,7 +5,7 @@
   "author": {
     "name": "Execution Associates"
   },
-  "license": "MIT",
+  "license": "LicenseRef-EXA-SL-1.0",
   "userConfig": {
     "gatewayUrl": {
       "type": "string",
