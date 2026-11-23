@@ -19,7 +19,7 @@ where the gateway runs:
 | -- | -- | -- |
 | the gateway on this machine, upgraded with one command | mise | [With mise](#with-mise) |
 | the gateway on this machine, without mise | bun, git | [From a checkout](#from-a-checkout) |
-| a gateway someone already runs (claude.ai/code, or a shared one) | nothing | [Remote gateway only](#remote-gateway-only) |
+| a gateway someone already runs: [the hosted one](#the-hosted-gateway), or a shared one | nothing | [Remote gateway only](#remote-gateway-only) |
 
 ### With mise
 
@@ -284,6 +284,17 @@ cloud, a second machine, or a team sharing one gateway. The mod then needs no lo
 config, gateway or bun. It loads the gateway's routing table from `GET /mod-config`
 (polled every 30 s) and sends routed requests to the gateway's URL. Provider keys stay
 with the gateway, and the session's Claude credentials are stripped as always.
+
+### The hosted gateway
+
+[llm-gateway.execution.associates](https://llm-gateway.execution.associates) runs the
+gateway for you. Sign up (using it means agreeing to provide usage telemetry; see its
+privacy page), add your providers with their API keys, define agents and fallback
+chains, and create a gateway key. Then set the plugin's Gateway URL to
+`https://llm-gateway.execution.associates` and its Gateway key to that key. It serves
+providers reached with an API key; omp's subscription logins need a gateway of your own.
+
+### Settings
 
 Tell the mod where the gateway is, in either place (the environment wins):
 

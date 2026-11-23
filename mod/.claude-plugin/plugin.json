@@ -10,14 +10,14 @@
     "gatewayUrl": {
       "type": "string",
       "title": "Gateway URL",
-      "description": "A remote gateway's HTTPS URL. Leave empty to use the gateway running on this machine. SUBAGENT_MODELS_URL overrides it.",
+      "description": "A remote gateway's HTTPS URL, such as the hosted one, https://llm-gateway.execution.associates. Leave empty to use the gateway running on this machine. SUBAGENT_MODELS_URL overrides it.",
       "required": false,
       "default": ""
     },
     "apiKey": {
       "type": "string",
       "title": "Gateway key",
-      "description": "The remote gateway's key, sent as a Bearer token. Not needed for a gateway on this machine. SUBAGENT_MODELS_API_KEY overrides it.",
+      "description": "The remote gateway's key (the hosted gateway's dashboard issues them), sent as a Bearer token. Not needed for a gateway on this machine. SUBAGENT_MODELS_API_KEY overrides it.",
       "required": false,
       "sensitive": true
     }
