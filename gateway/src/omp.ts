@@ -6,8 +6,11 @@
 // does not serve: fallback chains (config.yml) and, opt-in by name, agents
 // (agents/<name>.md). Our own file is laid over the import key by key.
 import { readFileSync, statSync } from "node:fs";
-import { CLAUDE_PROVIDER, expandHome, parseRef } from "./config";
+import { expandHome } from "./config";
+import { CLAUDE_PROVIDER, parseRef } from "./config-core";
 import type { OmpRuntime } from "./omp-runtime";
+import { ompResolves } from "./config-core";
+export { ompResolves };
 
 export type OmpBlock = {
   dir: string;
@@ -83,16 +86,6 @@ export function routableProviders(block: OmpBlock, rt: OmpRuntime, warnings: Omp
   const all = rt.providers();
   if (block.providers) for (const p of block.providers) if (!all.includes(p)) warnings.push({ text: `omp.providers: omp has no provider ${p}` });
   return (block.providers ?? all).filter(p => p !== CLAUDE_PROVIDER && all.includes(p));
-}
-
-/** Whether `ref` (with or without a level) names a model omp resolves among `providers`. */
-export function ompResolves(ref: string, providers: Set<string>, rt: OmpRuntime): boolean {
-  const { id } = parseRef(ref);
-  const slash = id.indexOf("/");
-  // An id naming a Claude model would be taken by Claude Code for that model: never routed.
-  if (slash <= 0 || /(^|\/)claude-/.test(id)) return false;
-  const p = id.slice(0, slash);
-  return providers.has(p) && rt.find(p, id.slice(slash + 1)) !== undefined;
 }
 
 /** omp's fallback chains and opt-in agents, in our shape, keeping only what resolves. */

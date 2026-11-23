@@ -3,7 +3,7 @@
 // redacted thinking dropped, the model id rewritten to the one Claude Code asked for).
 import type { Canonical, CBlock } from "./canonical";
 import { makeSignature } from "./canonical";
-import type { Level, ModelDef } from "./config";
+import type { Level, ModelDef } from "./config-core";
 import { type AnthropicEvent, type OpenCtx, UpstreamError, httpError, post, sse } from "./upstream";
 
 export function toAnthropic(c: Canonical, model: ModelDef, level: Level): Record<string, unknown> {

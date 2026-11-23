@@ -164,6 +164,55 @@ describe("remote gateway (SUBAGENT_MODELS_URL)", () => {
   });
 });
 
+describe("plugin settings (gatewayUrl, apiKey)", () => {
+  test("remoteFrom sends a gateway key as a Bearer header, beside an Access pair", () => {
+    expect(remoteFrom({ url: "https://g.test", apiKey: " smk_abc " })).toEqual({ base: "https://g.test", headers: { authorization: "Bearer smk_abc" } });
+    expect(remoteFrom({ url: "https://g.test", apiKey: "smk_abc", accessId: "i", accessSecret: "s" })!.headers).toEqual({ authorization: "Bearer smk_abc", "CF-Access-Client-Id": "i", "CF-Access-Client-Secret": "s" });
+  });
+
+  test("the gateway key replaces the session's Claude credential on a routed request", async () => {
+    const sent: any[] = [];
+    const remote = remoteFrom({ url: "https://llm-gateway.example.test", apiKey: "smk_abc" });
+    await routeFetch({ url: URL, init: { method: "POST", headers: { ...headers, authorization: "Bearer sk-ant-session" }, body: body("fake/model-a") } }, VIEW, async e => { sent.push(e); return ok(); }, () => {}, remote);
+    expect(sent[0].init.headers.authorization).toBe("Bearer smk_abc");
+    expect(JSON.stringify(sent[0].init.headers)).not.toContain("sk-ant-session");
+  });
+
+  test("a refused key names where to set it, and the gateway's own reason", () => {
+    const r = parseRemoteConfig("https://g", { status: 403, text: JSON.stringify({ type: "error", error: { type: "permission_error", message: "consent required: accept the telemetry policy at https://g/settings" } }) }) as any;
+    expect(r.error).toContain("consent required");
+    expect(r.error).toContain("/config");
+  });
+
+  const settingsSession = async ($: any, on: any, env: Record<string, string>) => {
+    const sent: any[] = [];
+    on("session.start", async (_$: any, e: any) => ({ cwd: e.cwd }));
+    on("ui.log", async (_$: any, e: any) => { sent.push({ log: e }); return { value: undefined }; });
+    on("clock.every", async () => ({ value: undefined }));
+    on("env.get", async (_$: any, e: any) => ({ value: env[e.name] }));
+    on("process.run", async () => { throw new Error("remote mode must not run the local CLI"); });
+    on("agent.register", async (_$: any, e: any) => { sent.push({ register: e }); return { value: { agent: `subagent-models:${e.name}` } }; });
+    on("http.fetch", async (_$: any, e: any) => { sent.push(e); return { value: { status: 200, ok: true, headers: {}, text: JSON.stringify({ ok: true, config: VIEW }) } }; });
+    await $.session.start({ cwd: "/", surface: null, isInteractive: false });
+    return sent;
+  };
+
+  test("the settings from /config reach the gateway", { options: { gatewayUrl: "https://hosted.example.test", apiKey: "smk_from_settings" } }, async ($, on) => {
+    const sent = await settingsSession($, on, { HOME: "/home/t" });
+    const f = sent.filter(s => s.url);
+    expect(f[0].url).toBe("https://hosted.example.test/mod-config");
+    expect(f[0].init.headers.authorization).toBe("Bearer smk_from_settings");
+    expect(sent.filter(s => s.register).map(s => s.register.name)).toEqual(["worker"]);
+  });
+
+  test("the environment wins over the settings", { options: { gatewayUrl: "https://hosted.example.test", apiKey: "smk_from_settings" } }, async ($, on) => {
+    const sent = await settingsSession($, on, { HOME: "/home/t", SUBAGENT_MODELS_URL: "https://env.example.test", SUBAGENT_MODELS_API_KEY: "smk_from_env" });
+    const f = sent.filter(s => s.url);
+    expect(f[0].url).toBe("https://env.example.test/mod-config");
+    expect(f[0].init.headers.authorization).toBe("Bearer smk_from_env");
+  });
+});
+
 describe("session start", () => {
   test("configured agents are registered as native agent types", async ($, on) => {
     const sent: any[] = [];

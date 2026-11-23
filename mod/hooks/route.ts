@@ -144,28 +144,41 @@ export function agentSpec(a: ModView["agents"][number], view: ModView): Record<s
   return { ...spec, ...a.extra };
 }
 
-/** A gateway reached over HTTPS (SUBAGENT_MODELS_URL) instead of the local socket. */
+/** A gateway reached over HTTPS (the hosted service, or your own) instead of the local socket. */
 export type Remote = { base: string; headers: Record<string, string> };
 
-/** The remote gateway from the session's environment, or null for the local socket. */
-export function remoteFrom(env: { url?: string; accessId?: string; accessSecret?: string }): Remote | null {
-  const url = env.url?.trim();
+/**
+ * The remote gateway from the plugin's settings and the environment, or null for
+ * the local socket. `apiKey` is a gateway key (the hosted service's smk_…); the
+ * Access pair is a Cloudflare Access service token for a gateway you run behind Access.
+ */
+export function remoteFrom(c: { url?: string; apiKey?: string; accessId?: string; accessSecret?: string }): Remote | null {
+  const url = c.url?.trim();
   if (!url) return null;
-  if (!/^https?:\/\/[^/]+/.test(url)) throw new Error(`SUBAGENT_MODELS_URL must be an http(s) URL, not ${url}`);
+  if (!/^https?:\/\/[^/]+/.test(url)) throw new Error(`the gateway URL must be an http(s) URL, not ${url}`);
   const headers: Record<string, string> = {};
-  // Cloudflare Access service token: Cloudflare checks it before anything reaches the gateway.
-  if (env.accessId && env.accessSecret) { headers["CF-Access-Client-Id"] = env.accessId; headers["CF-Access-Client-Secret"] = env.accessSecret; }
+  const key = c.apiKey?.trim();
+  if (key) headers.authorization = `Bearer ${key}`;
+  // Cloudflare checks this before anything reaches the gateway.
+  if (c.accessId && c.accessSecret) { headers["CF-Access-Client-Id"] = c.accessId; headers["CF-Access-Client-Secret"] = c.accessSecret; }
   return { base: url.replace(/\/+$/, ""), headers };
 }
 
 /** The mod-config answer of a remote gateway, parsed like the local CLI's. */
 export function parseRemoteConfig(base: string, res: { status: number; text?: string }): { ok: true; config: ModView } | { ok: false; error: string } {
-  if (res.status !== 200) return { ok: false, error: `the gateway at ${base} answered HTTP ${res.status} for /mod-config${res.status === 401 || res.status === 403 || res.status === 302 ? " (check SUBAGENT_MODELS_ACCESS_ID and SUBAGENT_MODELS_ACCESS_SECRET)" : ""}` };
+  if (res.status !== 200) {
+    let said = "";
+    try { const m = JSON.parse(res.text ?? "")?.error?.message; if (typeof m === "string") said = `: ${m.slice(0, 300)}`; } catch {}
+    const hint = res.status === 401 || res.status === 403 || res.status === 302
+      ? " (check the gateway key: the plugin's API key in /config, or SUBAGENT_MODELS_API_KEY; for a gateway behind Cloudflare Access, SUBAGENT_MODELS_ACCESS_ID and SUBAGENT_MODELS_ACCESS_SECRET)"
+      : "";
+    return { ok: false, error: `the gateway at ${base} answered HTTP ${res.status} for /mod-config${said}${hint}` };
+  }
   try {
     const j = JSON.parse(res.text ?? "");
     if (j?.ok && j.config) return { ok: true, config: j.config as ModView };
     return { ok: false, error: `the gateway at ${base}: ${j?.error ?? "no config in its answer"}` };
-  } catch { return { ok: false, error: `the gateway at ${base} did not answer /mod-config with JSON (a login page means the Access token is missing or wrong)` }; }
+  } catch { return { ok: false, error: `the gateway at ${base} did not answer /mod-config with JSON (a login page means a Cloudflare Access token is missing or wrong)` }; }
 }
 
 type FetchEvent = { url: string; init?: { headers?: Record<string, string>; body?: unknown; compress?: unknown; socketPath?: string; auth?: string; method?: string } };

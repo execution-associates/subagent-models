@@ -4,10 +4,12 @@
 // source kind and the exit status, never the output.
 import { readFileSync } from "node:fs";
 import type { Config, ProviderDef } from "./config";
+import type { KeySource } from "./key-source";
+export { scrub } from "./key-source";
 
 type Entry = { key: string; at: number };
 
-export class KeyStore {
+export class KeyStore implements KeySource {
   private cache = new Map<string, Entry>();
   private pending = new Map<string, Promise<string>>();
   constructor(private cfg: () => Config) {}
@@ -71,10 +73,4 @@ export class KeyStore {
     }
     return key;
   }
-}
-
-/** Replaces every known secret in `s` with [redacted]. */
-export function scrub(s: string, secrets: string[]): string {
-  for (const k of secrets) if (k) s = s.split(k).join("[redacted]");
-  return s;
 }

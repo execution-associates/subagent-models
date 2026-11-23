@@ -8,13 +8,12 @@
 // to the Claude Code mod, which re-sends it to Anthropic with the session's login.
 import type { Canonical } from "./canonical";
 import { withIdentity } from "./canonical";
-import type { Config, Level, ModelDef, ProviderDef, Target } from "./config";
+import { type Config, type Level, type ModelDef, type ProviderDef, type Target, ompResolves } from "./config-core";
 import type { OmpModelInfo } from "./omp-runtime";
 import { openOmp } from "./omp-transport";
-import { ompResolves } from "./omp";
 import { openAnthropic } from "./anthropic";
 import { openOpenAI } from "./openai";
-import type { KeyStore } from "./keys";
+import type { KeySource } from "./key-source";
 import { type Adapter, type AnthropicEvent, type ErrorClass, UpstreamError } from "./upstream";
 
 export function adapterFor(api: ProviderDef["api"]): Adapter {
@@ -60,7 +59,7 @@ export class Cooldowns {
 
 export type Deps = {
   cfg: Config;
-  keys: KeyStore;
+  keys: KeySource;
   cooldowns: Cooldowns;
   sleep?: (ms: number, signal: AbortSignal) => Promise<void>;
   /** Override per-api adapters (tests). */

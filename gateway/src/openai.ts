@@ -1,7 +1,7 @@
 // Canonical request -> OpenAI chat completions, and its stream -> Anthropic events.
 import type { CBlock, CImage, CMessage, Canonical, CText } from "./canonical";
 import { makeSignature, portableSchema } from "./canonical";
-import type { Level, ModelDef } from "./config";
+import type { Level, ModelDef } from "./config-core";
 import { type AnthropicEvent, type OpenCtx, UpstreamError, httpError, post, sse } from "./upstream";
 
 type OaiPart = { type: "text"; text: string } | { type: "image_url"; image_url: { url: string } };

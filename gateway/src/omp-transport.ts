@@ -2,7 +2,7 @@
 // The transport itself (HTTP, auth, every API family) is omp's.
 import type { CImage, Canonical, CText } from "./canonical";
 import { makeSignature, portableSchema } from "./canonical";
-import type { Level } from "./config";
+import type { Level } from "./config-core";
 import type { OmpEvent, OmpModelInfo, OmpRuntime } from "./omp-runtime";
 import { type AnthropicEvent, type ErrorClass, UpstreamError } from "./upstream";
 

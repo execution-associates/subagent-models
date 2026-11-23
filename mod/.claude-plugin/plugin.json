@@ -1,6 +1,25 @@
 {
   "name": "subagent-models",
-  "version": "0.1.0",
-  "description": "Native Claude Code subagents on non-Claude models (OpenAI- or Anthropic-compatible APIs), routed through a local gateway with fallback chains. Configured in ~/.config/subagent-models/config.yml.",
-  "license": "MIT"
+  "version": "0.2.0",
+  "description": "Native Claude Code subagents on non-Claude models (OpenAI- or Anthropic-compatible APIs), routed through a gateway with fallback chains: one on this machine (configured in ~/.config/subagent-models/config.yml) or a remote one reached with a gateway key.",
+  "author": {
+    "name": "Execution Associates"
+  },
+  "license": "MIT",
+  "userConfig": {
+    "gatewayUrl": {
+      "type": "string",
+      "title": "Gateway URL",
+      "description": "A remote gateway's HTTPS URL. Leave empty to use the gateway running on this machine. SUBAGENT_MODELS_URL overrides it.",
+      "required": false,
+      "default": ""
+    },
+    "apiKey": {
+      "type": "string",
+      "title": "Gateway key",
+      "description": "The remote gateway's key, sent as a Bearer token. Not needed for a gateway on this machine. SUBAGENT_MODELS_API_KEY overrides it.",
+      "required": false,
+      "sensitive": true
+    }
+  }
 }

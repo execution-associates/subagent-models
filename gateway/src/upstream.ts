@@ -6,7 +6,7 @@
 // yields AnthropicEvent and throws UpstreamError, and add it to `adapterFor` in
 // chain.ts.
 import type { Canonical } from "./canonical";
-import type { Level, ModelDef, ProviderDef } from "./config";
+import type { Level, ModelDef, ProviderDef } from "./config-core";
 
 export type AnthropicEvent = { type: string; [k: string]: unknown };
 

@@ -2,8 +2,9 @@
 //
 // Every model request the engine sends passes `http.fetch`. A request whose
 // `model` is one of the configured ids (refuseless/deepseek-v4.1-flash-fast, ...)
-// is sent to the gateway instead of Anthropic (the local socket, or the HTTPS URL in
-// SUBAGENT_MODELS_URL, whose /mod-config then stands in for the local config file), unchanged but for its URL
+// is sent to the gateway instead of Anthropic (the local socket, or a gateway URL from
+// the plugin's settings or SUBAGENT_MODELS_URL, whose /mod-config then stands in for
+// the local config file), unchanged but for its URL
 // and its credentials, which stay behind. Every other request goes on untouched.
 // When the gateway's fallback chain lands on a real Claude model, it answers with
 // a hand-back header and this hook re-sends the original request to Anthropic with
@@ -101,11 +102,14 @@ async function refresh($: EngineInterface, { force = false } = {}) {
   }
 }
 
-export const register: Register = on => {
+export const register: Register = (on, options) => {
+  // The plugin's settings (userConfig in plugin.json, set in /config); the environment wins.
+  const setting = (k: string) => (typeof options?.[k] === "string" ? (options[k] as string) : undefined);
   on("session.start", async ($, e, next) => {
     try {
       remote = remoteFrom({
-        url: await $.env.get("SUBAGENT_MODELS_URL"),
+        url: (await $.env.get("SUBAGENT_MODELS_URL")) || setting("gatewayUrl"),
+        apiKey: (await $.env.get("SUBAGENT_MODELS_API_KEY")) || setting("apiKey"),
         accessId: await $.env.get("SUBAGENT_MODELS_ACCESS_ID"),
         accessSecret: await $.env.get("SUBAGENT_MODELS_ACCESS_SECRET"),
       });

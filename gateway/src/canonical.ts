@@ -6,7 +6,7 @@
 // context_management, thread, diagnostics, metadata (device and account ids),
 // thinking blocks with signatures. Each is handled here, deliberately, once; the
 // adapters (openai.ts, anthropic.ts) only translate this canonical form.
-import type { Level } from "./config";
+import type { Level } from "./config-core";
 
 export type CText = { type: "text"; text: string; cache?: unknown };
 export type CImage = { type: "image"; mediaType: string; data?: string; url?: string };
@@ -41,12 +41,12 @@ export const SIG_PREFIX = "smg1.";
 /** Our thinking signature: the routed model that produced the block, plus the upstream's own signature. */
 export function makeSignature(origin: string, upstreamSignature?: string | null): string {
   const json = JSON.stringify(upstreamSignature ? { m: origin, s: upstreamSignature } : { m: origin });
-  return SIG_PREFIX + Buffer.from(json).toString("base64url");
+  return SIG_PREFIX + toBase64Url(json);
 }
 export function readSignature(sig: unknown): { origin: string; upstreamSignature: string | null } | null {
   if (typeof sig !== "string" || !sig.startsWith(SIG_PREFIX)) return null;
   try {
-    const j = JSON.parse(Buffer.from(sig.slice(SIG_PREFIX.length), "base64url").toString());
+    const j = JSON.parse(fromBase64Url(sig.slice(SIG_PREFIX.length)));
     return typeof j.m === "string" ? { origin: j.m, upstreamSignature: typeof j.s === "string" ? j.s : null } : null;
   } catch { return null; }
 }
@@ -284,4 +284,15 @@ export function portableSchema<T>(schema: T, names = false): T {
     out[k] = names ? portableSchema(v) : portableSchema(v, NAME_MAPS.has(k));
   }
   return out as T;
+}
+
+// base64url of UTF-8 text, with web APIs only (the hosted Worker has no Buffer).
+function toBase64Url(text: string): string {
+  let bin = "";
+  for (const b of new TextEncoder().encode(text)) bin += String.fromCharCode(b);
+  return btoa(bin).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
+}
+function fromBase64Url(s: string): string {
+  const bin = atob(s.replace(/-/g, "+").replace(/_/g, "/") + "=".repeat((4 - (s.length % 4)) % 4));
+  return new TextDecoder().decode(Uint8Array.from(bin, c => c.charCodeAt(0)));
 }

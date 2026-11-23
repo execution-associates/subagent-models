@@ -54,17 +54,15 @@ and call an agent from your config: `Agent(subagent_type: "subagent-models:<name
 
 ### Remote gateway only
 
-With `SUBAGENT_MODELS_URL` set, the mod loads everything from the gateway over HTTPS and
-never runs locally, so there is no gateway, bun or config to install. Enable the plugin
-from this repo's marketplace and set the three variables in
+With a remote gateway's URL set, the mod loads everything from that gateway over HTTPS
+and runs nothing locally, so there is no gateway, bun or config to install. Enable the
+plugin from this repo's marketplace and give it the gateway's URL and key, as in
 [Remote sessions](#remote-sessions). [Claude desktop and claude.ai/code](#claude-desktop-and-claudeaicode)
 has the settings for a cloud session.
 
 <details>
-<summary>Private repo, upgrades, one session, removal</summary>
+<summary>Upgrades, one session, removal</summary>
 
-- **Private repo:** mise needs a GitHub token that can read it, in `GITHUB_TOKEN` or
-  `MISE_GITHUB_TOKEN`; a clone or a cloud session needs ordinary GitHub access to it.
 - **Upgrade (mise):** `mise upgrade github:execution-associates/subagent-models`, then
   `subagent-models install` again. `install` is idempotent: it re-points
   `~/.local/share/subagent-models/app` at the new version, rewrites the service files
@@ -281,28 +279,33 @@ subagent-models logs sync
 
 ## Remote sessions
 
-A Claude Code session on another machine, such as claude.ai/code in the cloud, can use
-a gateway that runs elsewhere. The gateway has no auth of its own, so it is published
-through a tunnel with a gate in front, here a cloudflared tunnel behind Cloudflare Access:
+A Claude Code session can use a gateway that runs somewhere else: claude.ai/code in the
+cloud, a second machine, or a team sharing one gateway. The mod then needs no local
+config, gateway or bun. It loads the gateway's routing table from `GET /mod-config`
+(polled every 30 s) and sends routed requests to the gateway's URL. Provider keys stay
+with the gateway, and the session's Claude credentials are stripped as always.
+
+Tell the mod where the gateway is, in either place (the environment wins):
+
+| Plugin setting | Environment variable | Value |
+| -- | -- | -- |
+| Gateway URL (`gatewayUrl`) | `SUBAGENT_MODELS_URL` | the gateway's HTTPS URL |
+| Gateway key (`apiKey`) | `SUBAGENT_MODELS_API_KEY` | a key the gateway issued, sent as `Authorization: Bearer` |
+| | `SUBAGENT_MODELS_ACCESS_ID`, `SUBAGENT_MODELS_ACCESS_SECRET` | a Cloudflare Access service token, for a gateway behind Access |
+
+Claude Code asks for the plugin settings when the plugin is enabled. Change them later
+in `/plugin`: Installed, subagent-models, Configure options. The gateway URL also has a
+row in `/config`; the key, being secret, is kept in the system's credential store and
+appears only there. Cloud sessions take the environment variables instead.
+
+**Publishing your own gateway.** The gateway has no auth of its own, so put a gate in
+front of it, for example a cloudflared tunnel behind Cloudflare Access with a service
+token for the sessions:
 
 ```yaml
 gateway:
   listen: 127.0.0.1:8110       # loopback only; the tunnel's origin
 ```
-
-In the remote session's environment:
-
-| Variable | Value |
-| -- | -- |
-| `SUBAGENT_MODELS_URL` | the gateway's HTTPS URL, e.g. `https://llm-gateway.execution.associates` |
-| `SUBAGENT_MODELS_ACCESS_ID` | the Access service token's client id |
-| `SUBAGENT_MODELS_ACCESS_SECRET` | its client secret |
-
-With `SUBAGENT_MODELS_URL` set, the mod needs no local config, gateway or bun. It loads
-the gateway's routing table from `GET /mod-config` (polled every 30 s) and sends routed
-requests to the URL with the two `CF-Access-Client-*` headers. Provider keys stay with
-the gateway, and the session's Claude credentials are stripped as always. The session
-still has to load the mod, and its network policy has to allow the gateway's host.
 
 ## Claude desktop and claude.ai/code
 
@@ -332,9 +335,9 @@ gateway, so it uses a [remote gateway](#remote-sessions):
    }
    ```
 
-   The repo is private, so the session's GitHub access has to cover it.
-2. In the cloud environment's settings, set `SUBAGENT_MODELS_URL`,
-   `SUBAGENT_MODELS_ACCESS_ID` and `SUBAGENT_MODELS_ACCESS_SECRET`.
+2. In the cloud environment's settings, set `SUBAGENT_MODELS_URL` and
+   `SUBAGENT_MODELS_API_KEY` (or the Access pair, for a gateway behind Access). Cloud
+   sessions do not take plugin settings.
 3. Allow the gateway's host (for example `llm-gateway.execution.associates`) in the
    environment's network access. It is the only host needed: provider keys and API
    hosts stay with the gateway.
@@ -475,6 +478,11 @@ claude plugin test mod         # mod: routing, Claude hand-back, registration
 claude plugin validate mod
 tsc -p mod
 ```
+
+`gateway/src/core/` is the request path (config validation, chains, translation, the
+`/v1/messages` handler) with no Bun, Node or file-system API, for running the gateway
+inside a Cloudflare Worker; other projects import it as `subagent-models/core`.
+`test/core-purity.test.ts` bundles it for the browser and fails on any runtime import.
 
 **Release:** bump `version` in `mod/.claude-plugin/plugin.json`, then push a matching
 tag (`v0.2.0`). The release workflow attaches the source archive that `mise use -g
