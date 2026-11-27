@@ -36,7 +36,12 @@ async function configPath($: EngineInterface): Promise<string> {
 /** Validates the YAML with the gateway's own code (one validator, one set of rules). */
 async function readConfig($: EngineInterface, path: string): Promise<{ ok: true; config: ModView } | { ok: false; error: string }> {
   const cli = `${$.plugin.root}/../gateway/src/cli.ts`;
-  const bun = (await $.env.get("SUBAGENT_MODELS_BUN")) || "bun";
+  // A plugin installed from a marketplace is the mod alone, without the gateway beside it:
+  // such a session can only use a remote gateway, so say how to set one.
+  try { await $.fs.stat(cli); } catch {
+    return { ok: false, error: "no gateway: set SUBAGENT_MODELS_URL and SUBAGENT_MODELS_API_KEY (in a cloud session, in the environment's settings), or the plugin's Gateway URL and key, to a remote gateway such as https://llm-gateway.execution.associates. This copy of the plugin has no local gateway; one is installed with `subagent-models install`." };
+  }
+  const bun =(await $.env.get("SUBAGENT_MODELS_BUN")) || "bun";
   let r;
   try {
     r = await $.process.run([bun, cli, "mod-config", "--config", path], { timeoutMs: 60_000 });
