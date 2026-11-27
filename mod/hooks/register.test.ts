@@ -227,19 +227,22 @@ describe("session start", () => {
     expect(reg[0].prompt).toContain("You are an agent for Claude Code");
   });
 
-  test("a plugin without the gateway beside it, and no gateway URL, says how to set one", async ($, on) => {
-    const logs: string[] = [];
+  test("a plugin without the gateway beside it, and no gateway URL, uses the hosted gateway", async ($, on) => {
+    const fetched: string[] = [];
     let ran = false;
     on("session.start", async (_$: any, e: any) => ({ cwd: e.cwd }));
-    on("ui.log", async (_$: any, e: any) => { logs.push(JSON.stringify(e)); return { value: undefined }; });
+    on("ui.log", async () => ({ value: undefined }));
     on("clock.every", async () => ({ value: undefined }));
     on("env.get", async (_$: any, e: any) => ({ value: e.name === "HOME" ? "/home/t" : undefined }));
     on("store.get", async () => ({ value: undefined }));
+    on("store.set", async () => ({ value: undefined }));
+    on("agent.register", async (_$: any, e: any) => ({ value: { agent: `subagent-models:${e.name}` } }));
     on("process.run", async () => { ran = true; return { value: { exitCode: 1, stdout: "", stderr: "", isStdoutTruncated: false, isStderrTruncated: false } }; });
     on("fs.stat", async (_$: any, e: any) => String(e?.path ?? "").endsWith("/gateway/src/cli.ts") ? { deny: "ENOENT" } : { value: { kind: "file", size: 1, mtimeMs: 1, isLink: false } });
+    on("http.fetch", async (_$: any, e: any) => { fetched.push(e.url); return { value: { status: 200, ok: true, headers: {}, text: JSON.stringify({ ok: true, config: VIEW }) } }; });
     await $.session.start({ cwd: "/", surface: null, isInteractive: false });
     expect(ran).toBe(false);
-    expect(logs.join("\n")).toContain("SUBAGENT_MODELS_URL");
+    expect(fetched[0]).toBe("https://llm-gateway.execution.associates/mod-config");
   });
 });
 

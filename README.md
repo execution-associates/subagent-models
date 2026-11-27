@@ -300,7 +300,7 @@ Tell the mod where the gateway is, in either place (the environment wins):
 
 | Plugin setting | Environment variable | Value |
 | -- | -- | -- |
-| Gateway URL (`gatewayUrl`) | `SUBAGENT_MODELS_URL` | the gateway's HTTPS URL |
+| Gateway URL (`gatewayUrl`) | `SUBAGENT_MODELS_URL` | the gateway's HTTPS URL; unset, the local gateway when one is installed beside the mod, else the hosted one |
 | Gateway key (`apiKey`) | `SUBAGENT_MODELS_API_KEY` | a key the gateway issued, sent as `Authorization: Bearer` |
 | | `SUBAGENT_MODELS_ACCESS_ID`, `SUBAGENT_MODELS_ACCESS_SECRET` | a Cloudflare Access service token, for a gateway behind Access |
 
@@ -346,9 +346,9 @@ gateway, so it uses a [remote gateway](#remote-sessions):
    }
    ```
 
-2. In the cloud environment's settings, set `SUBAGENT_MODELS_URL` and
-   `SUBAGENT_MODELS_API_KEY` (or the Access pair, for a gateway behind Access). Cloud
-   sessions do not take plugin settings.
+2. In the cloud environment's settings, set `SUBAGENT_MODELS_API_KEY` (or the Access
+   pair, for a gateway behind Access), and `SUBAGENT_MODELS_URL` for a gateway other
+   than the hosted one, which is the default. Cloud sessions do not take plugin settings.
 3. Allow the gateway's host (for example `llm-gateway.execution.associates`) in the
    environment's network access. It is the only host needed: provider keys and API
    hosts stay with the gateway.

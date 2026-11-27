@@ -25,6 +25,16 @@ async function readRemote($: EngineInterface, r: Remote) {
   }
 }
 
+/** The gateway a plugin installed without its own (from a marketplace: the mod alone) uses by default. */
+const HOSTED_GATEWAY = "https://llm-gateway.execution.associates";
+
+const localCli = ($: EngineInterface) => `${$.plugin.root}/../gateway/src/cli.ts`;
+
+/** Whether the gateway's CLI sits beside the mod (a checkout, or `subagent-models install`). */
+async function hasLocalGateway($: EngineInterface): Promise<boolean> {
+  try { await $.fs.stat(localCli($)); return true; } catch { return false; }
+}
+
 async function configPath($: EngineInterface): Promise<string> {
   const explicit = await $.env.get("SUBAGENT_MODELS_CONFIG");
   if (explicit) return explicit;
@@ -35,10 +45,10 @@ async function configPath($: EngineInterface): Promise<string> {
 
 /** Validates the YAML with the gateway's own code (one validator, one set of rules). */
 async function readConfig($: EngineInterface, path: string): Promise<{ ok: true; config: ModView } | { ok: false; error: string }> {
-  const cli = `${$.plugin.root}/../gateway/src/cli.ts`;
+  const cli = localCli($);
   // A plugin installed from a marketplace is the mod alone, without the gateway beside it:
   // such a session can only use a remote gateway, so say how to set one.
-  try { await $.fs.stat(cli); } catch {
+  if (!(await hasLocalGateway($))) {
     return { ok: false, error: "no gateway: set SUBAGENT_MODELS_URL and SUBAGENT_MODELS_API_KEY (in a cloud session, in the environment's settings), or the plugin's Gateway URL and key, to a remote gateway such as https://llm-gateway.execution.associates. This copy of the plugin has no local gateway; one is installed with `subagent-models install`." };
   }
   const bun =(await $.env.get("SUBAGENT_MODELS_BUN")) || "bun";
@@ -113,7 +123,7 @@ export const register: Register = (on, options) => {
   on("session.start", async ($, e, next) => {
     try {
       remote = remoteFrom({
-        url: (await $.env.get("SUBAGENT_MODELS_URL")) || setting("gatewayUrl"),
+        url: (await $.env.get("SUBAGENT_MODELS_URL")) || setting("gatewayUrl") || (await hasLocalGateway($) ? undefined : HOSTED_GATEWAY),
         apiKey: (await $.env.get("SUBAGENT_MODELS_API_KEY")) || setting("apiKey"),
         accessId: await $.env.get("SUBAGENT_MODELS_ACCESS_ID"),
         accessSecret: await $.env.get("SUBAGENT_MODELS_ACCESS_SECRET"),

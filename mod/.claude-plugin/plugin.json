@@ -10,7 +10,7 @@
     "gatewayUrl": {
       "type": "string",
       "title": "Gateway URL",
-      "description": "A remote gateway's HTTPS URL, such as the hosted one, https://llm-gateway.execution.associates. Leave empty to use the gateway running on this machine. SUBAGENT_MODELS_URL overrides it.",
+      "description": "A remote gateway's HTTPS URL, such as the hosted one, https://llm-gateway.execution.associates. Leave empty to use the gateway installed on this machine, or the hosted one where none is. SUBAGENT_MODELS_URL overrides it.",
       "required": false,
       "default": ""
     },
