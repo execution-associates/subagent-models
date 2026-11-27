@@ -22,18 +22,21 @@ type Sent = { url: string; method: string; headers: Record<string, string>; body
 const reply = (status: number, j: unknown) => ({ value: { status, ok: status < 300, headers: { "content-type": "application/json" }, text: JSON.stringify(j) } });
 
 /** The engine beneath the mod, with the hosted gateway at the other end of http.fetch. */
-function world(on: any, { approveAfter = 1, store = {} as Record<string, unknown> } = {}) {
+function world(on: any, { approveAfter = 1, store = {} as Record<string, unknown>, proxyKey = false, files = {} as Record<string, string>, cloud = false } = {}) {
   const sent: Sent[] = [];
   const logs: string[] = [];
   const registered: string[] = [];
   const status: (string | undefined)[] = [];
+  const written: Record<string, string> = {};
   let polls = 0;
   let agents = [...AGENTS];
   const clock = mock.clock(on, { now: 1_000_000 });
   mock.store(on, store);
   on("session.start", async (_$: any, e: any) => ({ cwd: e.cwd }));
-  on("env.get", async (_$: any, e: any) => ({ value: e.name === "HOME" ? "/home/t" : e.name === "HOSTNAME" ? "laptop" : undefined }));
+  on("env.get", async (_$: any, e: any) => ({ value: e.name === "HOME" ? "/home/t" : e.name === "HOSTNAME" ? "laptop" : e.name === "CLAUDE_CODE_REMOTE" && cloud ? "true" : undefined }));
   on("fs.stat", async () => ({ deny: "ENOENT" }));
+  on("fs.read", async (_$: any, e: any) => (e.path in files ? { value: files[e.path] } : { deny: "ENOENT" }));
+  on("fs.write", async (_$: any, e: any) => { written[e.path] = e.text; return { value: undefined }; });
   on("command.register", async () => ({ value: { command: "subagent-models" } }));
   on("ui.open", async () => ({ value: { isPlaced: true } }));
   on("ui.log", async (_$: any, e: any) => { logs.push(JSON.stringify(e)); return { value: undefined }; });
@@ -44,7 +47,8 @@ function world(on: any, { approveAfter = 1, store = {} as Record<string, unknown
     const s: Sent = { url: e.url, method: e.init?.method ?? "GET", headers: e.init?.headers ?? {}, body: e.init?.body };
     sent.push(s);
     const path = s.url.replace(HOSTED, "");
-    const authed = s.headers.authorization === "Bearer smk_new" || s.headers.authorization === "Bearer smk_saved";
+    // A cloud environment's network secret: the proxy adds the key to every request to the host.
+    const authed = s.headers.authorization === "Bearer smk_new" || s.headers.authorization === "Bearer smk_saved" || (proxyKey && !s.headers.authorization);
     if (path === "/api/device/code") return reply(200, { device_code: "smd_1", user_code: "ABCD-EFGH", verification_uri: `${HOSTED}/device`, verification_uri_complete: `${HOSTED}/device?code=ABCD-EFGH`, expires_in: 900, interval: 2 });
     if (path === "/api/device/token") return ++polls > approveAfter ? reply(200, { api_key: "smk_new", email: "me@example.test" }) : reply(400, { error: "authorization_pending" });
     if (!authed) return reply(401, { error: "unknown key" });
@@ -60,14 +64,15 @@ function world(on: any, { approveAfter = 1, store = {} as Record<string, unknown
     if (path === "/api/keys/current") return reply(200, { ok: true });
     return reply(404, { error: "not_found" });
   });
-  return { sent, logs, registered, status, clock };
+  return { sent, logs, registered, status, clock, written };
 }
 
 describe("signing in", () => {
   test("a new install is signed out: nothing routes, the status line and the pane say how", async ($, on) => {
     const w = world(on);
     await $.session.start({ cwd: "/", surface: "terminal", isInteractive: true });
-    expect(w.sent.length).toBe(0);
+    // one check whether the environment signs requests in by itself; nothing else
+    expect(w.sent.map(s => s.url)).toEqual([`${HOSTED}/mod-config`]);
     expect(w.status.at(-1)).toContain("/subagent-models");
     const ui = await $.ui.mount({ ...PANE, surface: "terminal" });
     expect(await ui.find({ key: "sign-in" })).toBeTruthy();
@@ -89,7 +94,9 @@ describe("signing in", () => {
     await w.clock.advance(2000); // approved
     await w.clock.settle();
     expect(w.registered).toEqual(["worker"]);
-    const mc = w.sent.find(s => s.url.endsWith("/mod-config"))!;
+    // kept where a new session finds it, outside the plugin's store too
+    expect(JSON.parse(w.written["/home/t/.config/subagent-models/account-llm-gateway.execution.associates.json"]!)).toEqual({ key: "smk_new", email: "me@example.test" });
+    const mc = w.sent.filter(s => s.url.endsWith("/mod-config")).at(-1)!;
     expect(mc.headers.authorization).toBe("Bearer smk_new");
     expect(await ui.find({ type: "Text", text: /me@example\.test/ })).toBeTruthy();
     expect(await ui.find({ key: "agent:a1" })).toBeTruthy();
@@ -119,6 +126,37 @@ describe("signing in", () => {
     const r: any = await $.command.run({ command: "subagent-models", args: "login" } as any);
     expect(r.text).toContain(`${HOSTED}/device?code=ABCD-EFGH`);
     expect(r.text).toContain("ABCD-EFGH");
+  });
+});
+
+describe("staying signed in", () => {
+  test("a sign-in saved in ~/.config is used at start", async ($, on) => {
+    const w = world(on, { files: { "/home/t/.config/subagent-models/account-llm-gateway.execution.associates.json": JSON.stringify({ key: "smk_saved", email: "me@example.test" }) } });
+    await $.session.start({ cwd: "/", surface: "terminal", isInteractive: true });
+    expect(w.registered).toEqual(["worker"]);
+    expect(w.sent[0]!.headers.authorization).toBe("Bearer smk_saved");
+  });
+
+  test("a cloud environment's network secret signs every session in, with no key of the mod's", async ($, on) => {
+    const w = world(on, { proxyKey: true, cloud: true });
+    await $.session.start({ cwd: "/", surface: "desktop", isInteractive: true });
+    await w.clock.settle();
+    expect(w.registered).toEqual(["worker"]);
+    expect(w.sent.every(s => !s.headers.authorization)).toBe(true);
+    const ui = await $.ui.mount({ ...PANE, surface: "desktop" });
+    expect(await ui.find({ type: "Text", text: /Signed in by this environment/ })).toBeTruthy();
+    expect(await ui.find({ key: "agent:a1" })).toBeTruthy();
+    expect(await ui.find({ key: "sign-out" })).toBeFalsy();
+    await ui.unmount();
+  });
+
+  test("a cloud session signed in with a code says how to stay signed in", async ($, on) => {
+    const w = world(on, { cloud: true, store: { [`account:${HOSTED}`]: { key: "smk_saved", email: "me@example.test" } } });
+    await $.session.start({ cwd: "/", surface: "desktop", isInteractive: true });
+    await w.clock.settle();
+    const ui = await $.ui.mount({ ...PANE, surface: "desktop" });
+    expect(await ui.find({ type: "Text", text: /network secret/ })).toBeTruthy();
+    await ui.unmount();
   });
 });
 

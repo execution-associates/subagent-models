@@ -1,6 +1,6 @@
 {
   "name": "subagent-models",
-  "version": "0.3.0",
+  "version": "0.3.1",
   "description": "Native Claude Code subagents on non-Claude models (OpenAI- or Anthropic-compatible APIs), with fallback chains. Sign in to the hosted gateway and set up providers and agents from the /subagent-models pane.",
   "author": {
     "name": "Execution Associates"

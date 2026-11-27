@@ -38,7 +38,9 @@ the same pane, add a provider (pick one, paste its API key, choose models) and a
 agent on one of its models. Agents load at once as `subagent-models:<name>`.
 `/subagent-models login`, `logout` and `status` do the same from the prompt where no
 pane is shown. Provider keys are stored encrypted on the gateway; the mod keeps only
-its own gateway key, in the plugin's store under `~/.claude`.
+its own gateway key, in `~/.config/subagent-models/` and the plugin's store, so later
+sessions start signed in. In cloud sessions, see
+[claude.ai/code](#claude-desktop-and-claudeaicode).
 
 ### With mise
 
@@ -364,11 +366,14 @@ gateway, so it uses a [remote gateway](#remote-sessions):
    }
    ```
 
-2. A cloud container starts fresh each session, so a sign-in does not last past it
-   (`/subagent-models login` works for the one session). To stay signed in, create a
-   gateway key on the site and set it as `SUBAGENT_MODELS_API_KEY` in the cloud
-   environment's settings (with `SUBAGENT_MODELS_URL` for a gateway other than the hosted
-   one). Cloud sessions do not take plugin settings.
+2. A cloud container starts fresh each session, so a sign-in made there ends with it.
+   To stay signed in, create a gateway key on the site (Gateway keys) and save it in the
+   cloud environment's settings under **Network secrets**, for the host
+   `llm-gateway.execution.associates`, as `Authorization: Bearer <key>`. The environment's
+   proxy adds it to every request to the gateway, and the mod, finding its requests
+   accepted with no key of its own, starts every session signed in. The key never enters
+   the container. (`SUBAGENT_MODELS_API_KEY` works too, but an environment variable is
+   readable by everything in the session.) Cloud sessions do not take plugin settings.
 3. Allow the gateway's host (for example `llm-gateway.execution.associates`) in the
    environment's network access. It is the only host needed: provider keys and API
    hosts stay with the gateway.

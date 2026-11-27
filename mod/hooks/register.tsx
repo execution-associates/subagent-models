@@ -39,10 +39,49 @@ let base: string | null = null;
 let fixedKey: string | null = null;
 let accessHeaders: Record<string, string> = {};
 let account: { key: string; email: string | null } | null = null;
+/** The cloud environment adds the gateway key itself (a network secret for the gateway's host). */
+let envKey = false;
 let devicePoll: { cancel: () => void } | null = null;
 let poller: { cancel: () => void } | null = null;
 
 const accountKey = (b: string) => `account:${b}`;
+type Account = { key: string; email: string | null };
+const isAccount = (x: unknown): x is Account => typeof (x as Account | null)?.key === "string" && (x as Account).key.length > 0;
+
+/**
+ * Where a sign-in is kept: a file of the gateway's own under ~/.config, which outlives
+ * the plugin's store when the plugin is updated, and the store too.
+ */
+async function accountFile($: EngineInterface, b: string) {
+  const xdg = await $.env.get("XDG_CONFIG_HOME");
+  const home = await $.env.get("HOME");
+  const dir = `${xdg || `${home}/.config`}/subagent-models`;
+  return { dir, path: `${dir}/account-${b.replace(/^https?:\/\//, "").replace(/[^A-Za-z0-9.-]/g, "_")}.json` };
+}
+
+async function loadAccount($: EngineInterface, b: string): Promise<Account | null> {
+  try {
+    const f = await accountFile($, b);
+    const saved = JSON.parse(await $.fs.read(f.path));
+    if (isAccount(saved)) return saved;
+  } catch {}
+  const stored = await $.store.get(accountKey(b)).catch(() => undefined);
+  return isAccount(stored) ? stored : null;
+}
+
+async function saveAccount($: EngineInterface, b: string, a: Account | null) {
+  if (a) await $.store.set(accountKey(b), a).catch(() => {});
+  else await $.store.delete(accountKey(b)).catch(() => {});
+  try {
+    const f = await accountFile($, b);
+    const text = a ? `${JSON.stringify(a, null, 2)}\n` : "{}\n";
+    try { await $.fs.write(f.path, text); }
+    catch {
+      await $.process.run(["mkdir", "-p", f.dir], { timeoutMs: 10_000 });
+      await $.fs.write(f.path, text);
+    }
+  } catch {}
+}
 const host = (b: string) => b.replace(/^https?:\/\//, "");
 
 function httpFetch($: EngineInterface): Fetch {
@@ -154,7 +193,7 @@ async function refresh($: EngineInterface, { force = false } = {}) {
 
 // ---- signing in and out
 
-const keyInUse = () => fixedKey ?? account?.key ?? null;
+const keyInUse = () => fixedKey ?? account?.key ?? (envKey ? "" : null);
 /** A gateway of one's own behind Cloudflare Access may take the Access token alone. */
 const credentialed = () => keyInUse() !== null || Object.keys(accessHeaders).length > 0;
 
@@ -166,7 +205,7 @@ function useKey(key: string | null) {
 
 async function signedOut($: EngineInterface, why: string | null) {
   account = null;
-  if (base !== null) await $.store.delete(accountKey(base)).catch(() => {});
+  if (base !== null) await saveAccount($, base, null);
   useKey(fixedKey);
   view = EMPTY_VIEW;
   await $.store.delete("lastGoodConfig").catch(() => {});
@@ -208,7 +247,7 @@ async function signIn($: EngineInterface): Promise<{ url: string; userCode: stri
       return;
     }
     account = { key: p.apiKey, email: p.email };
-    await $.store.set(accountKey(b), account).catch(() => {});
+    await saveAccount($, b, account);
     useKey(keyInUse());
     $.ui.status(undefined);
     $.ui.toast(`subagent-models: signed in${p.email ? ` as ${p.email}` : ""}`);
@@ -225,14 +264,14 @@ async function signOut($: EngineInterface) {
   devicePoll = null;
   if (account && base !== null) await call(httpFetch($), base, account.key, "DELETE", "/keys/current").catch(() => {});
   await signedOut($, null);
-  if (credentialed()) await setPane($, s => ({ ...s, auth: { kind: "key", base: base! } }));
+  if (credentialed()) await setPane($, s => ({ ...s, auth: { kind: "key", base: base!, via: fixedKey || Object.keys(accessHeaders).length ? "settings" : "environment" } }));
 }
 
 // ---- the gateway's configuration, for the pane
 
 async function reload($: EngineInterface) {
   const key = keyInUse();
-  if (base === null || !key) return;
+  if (base === null || key === null) return;
   const r = await loadGateway(httpFetch($), base, key);
   if (!r.ok) {
     if (r.status === 401 && account && !fixedKey) return signedOut($, "Your sign-in to the gateway ended. Sign in again.");
@@ -245,7 +284,7 @@ async function reload($: EngineInterface) {
 /** One change through the API: busy while it runs, then the pane and the routing table reloaded. */
 async function change($: EngineInterface, what: string, method: string, path: string, body: unknown, after?: (data: any) => Edit) {
   const key = keyInUse();
-  if (base === null || !key) return;
+  if (base === null || key === null) return;
   await setPane($, s => ({ ...s, busy: what, error: null, notice: null }));
   const r = await call<any>(httpFetch($), base, key, method, path, body);
   if (!r.ok) {
@@ -283,7 +322,7 @@ async function saveAgent($: EngineInterface, d: Extract<Edit, { kind: "agent" }>
 
 async function fetchModels($: EngineInterface, d: Extract<Edit, { kind: "provider-new" }>) {
   const key = keyInUse();
-  if (base === null || !key) return;
+  if (base === null || key === null) return;
   await setPane($, s => ({ ...s, busy: "Fetching the models", error: null }));
   const r = await call<{ ok: boolean; models: string[]; error?: string }>(httpFetch($), base, key, "POST", "/providers/test", { api: d.api, baseUrl: d.baseUrl, apiKey: d.apiKey.trim() });
   const err = !r.ok ? r.error : r.data.ok ? null : (r.data.error ?? "the provider refused");
@@ -305,6 +344,10 @@ async function saveProvider($: EngineInterface, d: Extract<Edit, { kind: "provid
   }
 }
 
+/** A cloud session's container ends with it, and a sign-in saved in it too. */
+const CLOUD_HINT =
+  "A cloud session forgets this sign-in when it ends. To stay signed in, create a gateway key on the site (Gateway keys) and save it in the cloud environment's settings as a network secret for llm-gateway.execution.associates (Authorization: Bearer): every session then starts signed in.";
+
 // ---- describing where things stand, for the command's text
 
 function statusText(s: PaneState): string {
@@ -312,7 +355,9 @@ function statusText(s: PaneState): string {
   if (a.kind === "local") return `subagent-models: the gateway on this machine (${a.path}).`;
   if (a.kind === "signed-out") return `subagent-models: not signed in to ${host(a.base)}. Run /${COMMAND} login.`;
   if (a.kind === "device") return `subagent-models: waiting for you to approve code ${a.userCode} at ${a.url}`;
-  const who = a.kind === "signed-in" ? `signed in to ${host(a.base)}${a.email ? ` as ${a.email}` : ""}` : `using a gateway key for ${host(a.base)}`;
+  const who = a.kind === "signed-in" ? `signed in to ${host(a.base)}${a.email ? ` as ${a.email}` : ""}`
+    : a.via === "environment" ? `signed in to ${host(a.base)} through this environment's network secret`
+    : `using a gateway key for ${host(a.base)}`;
   const agents = view?.agents.map(x => `subagent-models:${x.name} (${x.model})`) ?? [];
   return `subagent-models: ${who}. ${agents.length ? `Agents: ${agents.join(", ")}.` : `No agents yet: open /${COMMAND} to add a provider and an agent.`}`;
 }
@@ -338,11 +383,18 @@ export const register: Register = (on, options) => {
         remote = null;
         await setPane($, s => ({ ...s, auth: { kind: "local", path } }));
       } else {
-        account = ((await $.store.get(accountKey(base)).catch(() => undefined)) as typeof account) ?? null;
-        useKey(keyInUse());
         const b = base;
-        const auth: Auth = fixedKey || Object.keys(accessHeaders).length ? { kind: "key", base: b } : account ? { kind: "signed-in", base: b, email: account.email } : { kind: "signed-out", base: b };
-        await setPane($, s => ({ ...s, auth, error: null, busy: null }));
+        account = await loadAccount($, b);
+        // Nothing of our own: a cloud environment may add the key to each request itself.
+        envKey = false;
+        if (!fixedKey && !account && !Object.keys(accessHeaders).length) envKey = (await readRemote($, { base: b, headers: {} })).ok;
+        useKey(keyInUse());
+        const auth: Auth = fixedKey || Object.keys(accessHeaders).length ? { kind: "key", base: b, via: "settings" }
+          : account ? { kind: "signed-in", base: b, email: account.email }
+          : envKey ? { kind: "key", base: b, via: "environment" }
+          : { kind: "signed-out", base: b };
+        const cloud = Boolean(await $.env.get("CLAUDE_CODE_REMOTE"));
+        await setPane($, s => ({ ...s, auth, cloud, error: null, busy: null }));
       }
     } catch (err) { $.ui.log(`${(err as Error).message}`); }
 
@@ -374,7 +426,7 @@ export const register: Register = (on, options) => {
       const r = await signIn($);
       if ("error" in r) return { text: `subagent-models: ${r.error}` };
       void $.ui.open({ id: PANE, title: "Subagent models" }).catch(() => {});
-      return { text: `To sign in, open ${r.url} and approve the code ${r.userCode}. New to the gateway? The same page creates your account. Claude Code picks the sign-in up on its own.` };
+      return { text: `To sign in, open ${r.url} and approve the code ${r.userCode}. New to the gateway? The same page creates your account. Claude Code picks the sign-in up on its own.${e.cloud ? ` ${CLOUD_HINT}` : ""}` };
     }
     if (args === "logout" || args === "signout" || args === "sign-out") {
       await signOut($);
@@ -462,11 +514,12 @@ export const register: Register = (on, options) => {
     const g = s.gateway;
     const header = (
       <Box flexDirection="row" gap={2}>
-        <Text dimColor>{a.kind === "signed-in" ? `${a.email ?? "Signed in"} · ${host(a.base)}` : `Gateway key · ${host(a.base)}`}</Text>
+        <Text dimColor>{a.kind === "signed-in" ? `${a.email ?? "Signed in"} · ${host(a.base)}` : a.via === "environment" ? `Signed in by this environment · ${host(a.base)}` : `Gateway key · ${host(a.base)}`}</Text>
         <Button key="refresh" plain hotkey="r" dimColor onPress={() => { void reload($); }}>Refresh</Button>
         {a.kind === "signed-in" && <Button key="sign-out" plain dimColor onPress={() => { void signOut($); }}>Sign out</Button>}
       </Box>
     );
+    const cloudHint = s.cloud && a.kind === "signed-in" ? <Text dimColor>{CLOUD_HINT}</Text> : null;
     const back = <Button key="back" onPress={() => set(x => ({ ...x, edit: null, error: null }))}>Cancel</Button>;
     const d = s.edit;
 
@@ -637,6 +690,7 @@ export const register: Register = (on, options) => {
             })}
           </Box>
         )}
+        {cloudHint}
         {messages}
       </Box>
     );

@@ -73,12 +73,13 @@ import type { Agent, Api, Chain, Gateway, Provider } from "../types";
 
 export type ApiResult<T> = { ok: true; data: T } | { ok: false; status: number; error: string };
 
+/** One call to the configuration API; an empty key sends none (a cloud environment adds it). */
 export async function call<T>(fetch: Fetch, base: string, key: string, method: string, path: string, body?: unknown): Promise<ApiResult<T>> {
   let r;
   try {
     r = await fetch(`${base}/api${path}`, {
       method,
-      headers: { authorization: `Bearer ${key}`, ...(body === undefined ? {} : { "content-type": "application/json" }) },
+      headers: { ...(key ? { authorization: `Bearer ${key}` } : {}), ...(body === undefined ? {} : { "content-type": "application/json" }) },
       ...(body === undefined ? {} : { body: JSON.stringify(body) }),
     });
   } catch (e) {

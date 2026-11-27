@@ -11,8 +11,11 @@ export type Gateway = { providers: Provider[]; agents: Agent[]; chains: Chain[] 
 export type Auth =
   /** The gateway on this machine, configured in its YAML file. */
   | { kind: "local"; path: string }
-  /** A remote gateway with a key from the settings or SUBAGENT_MODELS_API_KEY. */
-  | { kind: "key"; base: string }
+  /**
+   * A remote gateway with a key from the settings or SUBAGENT_MODELS_API_KEY, or
+   * (`via: "environment"`) one a cloud environment's network secret adds to each request.
+   */
+  | { kind: "key"; base: string; via?: "settings" | "environment" }
   | { kind: "signed-out"; base: string }
   /** A device sign-in waiting for the person to approve it in a browser. */
   | { kind: "device"; base: string; userCode: string; url: string; expiresAt: number }
@@ -32,6 +35,8 @@ export type PaneState = {
   error: string | null;
   notice: string | null;
   edit: Edit;
+  /** A cloud session: its container, and a sign-in saved in it, end with it. */
+  cloud?: boolean;
 };
 
 declare module "claude-code" {
