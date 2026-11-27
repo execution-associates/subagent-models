@@ -22,13 +22,14 @@ type Sent = { url: string; method: string; headers: Record<string, string>; body
 const reply = (status: number, j: unknown) => ({ value: { status, ok: status < 300, headers: { "content-type": "application/json" }, text: JSON.stringify(j) } });
 
 /** The engine beneath the mod, with the hosted gateway at the other end of http.fetch. */
-function world(on: any, { approveAfter = 1, store = {} as Record<string, unknown>, proxyKey = false, files = {} as Record<string, string>, cloud = false } = {}) {
+function world(on: any, { approveAfter = 1, store = {} as Record<string, unknown>, proxyKey = false, proxyReadyAfter = 0, files = {} as Record<string, string>, cloud = false } = {}) {
   const sent: Sent[] = [];
   const logs: string[] = [];
   const registered: string[] = [];
   const status: (string | undefined)[] = [];
   const written: Record<string, string> = {};
   let polls = 0;
+  let keyless = 0;
   let agents = [...AGENTS];
   const clock = mock.clock(on, { now: 1_000_000 });
   mock.store(on, store);
@@ -48,7 +49,7 @@ function world(on: any, { approveAfter = 1, store = {} as Record<string, unknown
     sent.push(s);
     const path = s.url.replace(HOSTED, "");
     // A cloud environment's network secret: the proxy adds the key to every request to the host.
-    const authed = s.headers.authorization === "Bearer smk_new" || s.headers.authorization === "Bearer smk_saved" || (proxyKey && !s.headers.authorization);
+    const authed = s.headers.authorization === "Bearer smk_new" || s.headers.authorization === "Bearer smk_saved" || (proxyKey && !s.headers.authorization && keyless++ >= proxyReadyAfter);
     if (path === "/api/device/code") return reply(200, { device_code: "smd_1", user_code: "ABCD-EFGH", verification_uri: `${HOSTED}/device`, verification_uri_complete: `${HOSTED}/device?code=ABCD-EFGH`, expires_in: 900, interval: 2 });
     if (path === "/api/device/token") return ++polls > approveAfter ? reply(200, { api_key: "smk_new", email: "me@example.test" }) : reply(400, { error: "authorization_pending" });
     if (!authed) return reply(401, { error: "unknown key" });
@@ -147,6 +148,24 @@ describe("staying signed in", () => {
     expect(await ui.find({ type: "Text", text: /Signed in by this environment/ })).toBeTruthy();
     expect(await ui.find({ key: "agent:a1" })).toBeTruthy();
     expect(await ui.find({ key: "sign-out" })).toBeFalsy();
+    await ui.unmount();
+  });
+
+  test("a new container's proxy that takes a while to hold the secret still signs the session in", async ($, on) => {
+    // the first two key-less checks are refused, as before the proxy has the secret
+    const w = world(on, { proxyKey: true, proxyReadyAfter: 2, cloud: true });
+    await $.session.start({ cwd: "/", surface: "desktop", isInteractive: true });
+    expect(w.registered).toEqual([]);
+    expect(w.status.at(-1)).toContain("sign in");
+    await w.clock.advance(2000);
+    await w.clock.settle();
+    expect(w.registered).toEqual([]);
+    await w.clock.advance(4000);
+    await w.clock.settle();
+    expect(w.registered).toEqual(["worker"]);
+    expect(w.status.at(-1)).toBeUndefined();
+    const ui = await $.ui.mount({ ...PANE, surface: "desktop" });
+    expect(await ui.find({ type: "Text", text: /Signed in by this environment/ })).toBeTruthy();
     await ui.unmount();
   });
 

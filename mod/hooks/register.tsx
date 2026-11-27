@@ -267,6 +267,37 @@ async function signOut($: EngineInterface) {
   if (credentialed()) await setPane($, s => ({ ...s, auth: { kind: "key", base: base!, via: fixedKey || Object.keys(accessHeaders).length ? "settings" : "environment" } }));
 }
 
+/**
+ * Whether the gateway takes this session's requests with no key of the mod's: a cloud
+ * environment's network secret, added by its proxy. A container just started may ask
+ * before its proxy holds the secret, so a failed check is tried again (probeLater, and
+ * the poll while signed out). Once it answers, the session is signed in.
+ */
+async function probeEnvironment($: EngineInterface): Promise<boolean> {
+  if (base === null || credentialed()) return false;
+  const b = base;
+  if (!(await readRemote($, { base: b, headers: {} })).ok) return false;
+  if (base !== b || credentialed()) return false; // something else signed in meanwhile
+  const s = await read($, pane);
+  if (s.auth.kind === "device") { devicePoll?.cancel(); devicePoll = null; }
+  envKey = true;
+  useKey(keyInUse());
+  $.ui.status(undefined);
+  await setPane($, x => ({ ...x, auth: { kind: "key", base: b, via: "environment" }, error: null }));
+  await refresh($, { force: true }).catch(() => {});
+  await reload($);
+  return true;
+}
+
+/** The first checks after start, a few seconds apart, while a new container's proxy settles. */
+function probeLater($: EngineInterface, delays: number[]) {
+  const [ms, ...rest] = delays;
+  if (ms === undefined) return;
+  $.clock.after(ms, () => {
+    void probeEnvironment($).then(ok => { if (!ok && !credentialed()) probeLater($, rest); }, () => probeLater($, rest));
+  });
+}
+
 // ---- the gateway's configuration, for the pane
 
 async function reload($: EngineInterface) {
@@ -402,6 +433,8 @@ export const register: Register = (on, options) => {
 
     if (base !== null && !credentialed()) {
       view = EMPTY_VIEW;
+      // In a cloud session, the environment's proxy may not hold its secret yet.
+      probeLater($, [2000, 4000, 8000, 15_000]);
       $.ui.status(`subagent-models: sign in with /${COMMAND}`);
       // Newly installed: show the pane once, unasked; after that the status line says how.
       if (!(await $.store.get("introduced").catch(() => true))) {
@@ -414,7 +447,10 @@ export const register: Register = (on, options) => {
     }
     // A local file is a cheap stat; a remote gateway is a request, so poll it less often.
     poller?.cancel();
-    poller = $.clock.every(base !== null ? 30_000 : 3000, () => { refresh($).catch(() => {}); });
+    poller = $.clock.every(base !== null ? 30_000 : 3000, () => {
+      if (base !== null && !credentialed()) void probeEnvironment($).catch(() => {});
+      else refresh($).catch(() => {});
+    });
     return next(e);
   });
 
