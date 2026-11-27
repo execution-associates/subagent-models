@@ -7,8 +7,10 @@ CLAUDE.md, every tool with its schema, deferred MCP tools, skills, reminders and
 compaction. Only the model answering it changes.
 
 Two parts: a **mod** (a Claude Code plugin) that routes requests for configured ids,
-and a **gateway** (a small Bun daemon) that serves them from any OpenAI- or
-Anthropic-compatible API, with retries and fallback chains.
+and a **gateway** that serves them from any OpenAI- or Anthropic-compatible API, with
+retries and fallback chains. The gateway is [hosted](https://llm-gateway.execution.associates)
+by default: install the plugin, run `/subagent-models`, sign in, and set up providers
+and agents in its pane. You can also run the gateway yourself.
 
 ## Install
 
@@ -17,9 +19,26 @@ where the gateway runs:
 
 | You want | Needs | Path |
 | -- | -- | -- |
+| the hosted gateway (the default) | nothing | [Hosted](#hosted) |
 | the gateway on this machine, upgraded with one command | mise | [With mise](#with-mise) |
 | the gateway on this machine, without mise | bun, git | [From a checkout](#from-a-checkout) |
-| a gateway someone already runs: [the hosted one](#the-hosted-gateway), or a shared one | nothing | [Remote gateway only](#remote-gateway-only) |
+| a gateway someone else runs | its URL and key | [Remote gateway only](#remote-gateway-only) |
+
+### Hosted
+
+```
+/plugin marketplace add execution-associates/subagent-models
+/plugin install subagent-models@subagent-models
+/subagent-models
+```
+
+The pane signs you in with a code: open the link it shows, sign up or sign in, and
+approve the code. Claude Code picks the sign-in up by itself and keeps it. Then, in
+the same pane, add a provider (pick one, paste its API key, choose models) and an
+agent on one of its models. Agents load at once as `subagent-models:<name>`.
+`/subagent-models login`, `logout` and `status` do the same from the prompt where no
+pane is shown. Provider keys are stored encrypted on the gateway; the mod keeps only
+its own gateway key, in the plugin's store under `~/.claude`.
 
 ### With mise
 
@@ -54,9 +73,8 @@ and call an agent from your config: `Agent(subagent_type: "subagent-models:<name
 
 ### Remote gateway only
 
-With a remote gateway's URL set, the mod loads everything from that gateway over HTTPS
-and runs nothing locally, so there is no gateway, bun or config to install. Enable the
-plugin from this repo's marketplace and give it the gateway's URL and key, as in
+With a gateway URL set, the mod loads everything from that gateway over HTTPS and runs
+nothing locally. Give the plugin the gateway's URL and key, as in
 [Remote sessions](#remote-sessions). [Claude desktop and claude.ai/code](#claude-desktop-and-claudeaicode)
 has the settings for a cloud session.
 
@@ -288,11 +306,11 @@ with the gateway, and the session's Claude credentials are stripped as always.
 ### The hosted gateway
 
 [llm-gateway.execution.associates](https://llm-gateway.execution.associates) runs the
-gateway for you. Sign up (using it means agreeing to provide usage telemetry; see its
-privacy page), add your providers with their API keys, define agents and fallback
-chains, and create a gateway key. Then set the plugin's Gateway URL to
-`https://llm-gateway.execution.associates` and its Gateway key to that key. It serves
-providers reached with an API key; omp's subscription logins need a gateway of your own.
+gateway for you, and the mod uses it unless told otherwise. Sign in from
+`/subagent-models` ([Hosted](#hosted)); using it means agreeing to provide usage
+telemetry (see its privacy page). Providers, agents and fallback chains can be edited
+in the pane or on the site. It serves providers reached with an API key; omp's
+subscription logins need a gateway of your own.
 
 ### Settings
 
@@ -346,9 +364,11 @@ gateway, so it uses a [remote gateway](#remote-sessions):
    }
    ```
 
-2. In the cloud environment's settings, set `SUBAGENT_MODELS_API_KEY` (or the Access
-   pair, for a gateway behind Access), and `SUBAGENT_MODELS_URL` for a gateway other
-   than the hosted one, which is the default. Cloud sessions do not take plugin settings.
+2. A cloud container starts fresh each session, so a sign-in does not last past it
+   (`/subagent-models login` works for the one session). To stay signed in, create a
+   gateway key on the site and set it as `SUBAGENT_MODELS_API_KEY` in the cloud
+   environment's settings (with `SUBAGENT_MODELS_URL` for a gateway other than the hosted
+   one). Cloud sessions do not take plugin settings.
 3. Allow the gateway's host (for example `llm-gateway.execution.associates`) in the
    environment's network access. It is the only host needed: provider keys and API
    hosts stay with the gateway.

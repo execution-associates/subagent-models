@@ -170,7 +170,7 @@ export function parseRemoteConfig(base: string, res: { status: number; text?: st
     let said = "";
     try { const m = JSON.parse(res.text ?? "")?.error?.message; if (typeof m === "string") said = `: ${m.slice(0, 300)}`; } catch {}
     const hint = res.status === 401 || res.status === 403 || res.status === 302
-      ? " (check the gateway key: the plugin's API key in /config, or SUBAGENT_MODELS_API_KEY; for a gateway behind Cloudflare Access, SUBAGENT_MODELS_ACCESS_ID and SUBAGENT_MODELS_ACCESS_SECRET)"
+      ? " (sign in again with /subagent-models login, or check the key in the plugin's settings or SUBAGENT_MODELS_API_KEY; for a gateway behind Cloudflare Access, SUBAGENT_MODELS_ACCESS_ID and SUBAGENT_MODELS_ACCESS_SECRET)"
       : "";
     return { ok: false, error: `the gateway at ${base} answered HTTP ${res.status} for /mod-config${said}${hint}` };
   }

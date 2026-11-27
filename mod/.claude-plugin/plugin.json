@@ -1,7 +1,7 @@
 {
   "name": "subagent-models",
-  "version": "0.2.0",
-  "description": "Native Claude Code subagents on non-Claude models (OpenAI- or Anthropic-compatible APIs), routed through a gateway with fallback chains: one on this machine (configured in ~/.config/subagent-models/config.yml) or a remote one reached with a gateway key.",
+  "version": "0.3.0",
+  "description": "Native Claude Code subagents on non-Claude models (OpenAI- or Anthropic-compatible APIs), with fallback chains. Sign in to the hosted gateway and set up providers and agents from the /subagent-models pane.",
   "author": {
     "name": "Execution Associates"
   },
@@ -10,16 +10,17 @@
     "gatewayUrl": {
       "type": "string",
       "title": "Gateway URL",
-      "description": "A remote gateway's HTTPS URL, such as the hosted one, https://llm-gateway.execution.associates. Leave empty to use the gateway installed on this machine, or the hosted one where none is. SUBAGENT_MODELS_URL overrides it.",
+      "description": "Leave empty for the hosted gateway (https://llm-gateway.execution.associates). Set it only to use a gateway you run yourself. SUBAGENT_MODELS_URL overrides it.",
       "required": false,
       "default": ""
     },
     "apiKey": {
       "type": "string",
       "title": "Gateway key",
-      "description": "The remote gateway's key (the hosted gateway's dashboard issues them), sent as a Bearer token. Not needed for a gateway on this machine. SUBAGENT_MODELS_API_KEY overrides it.",
+      "description": "Not needed for the hosted gateway: sign in with /subagent-models instead. A key for a gateway you run yourself, sent as a Bearer token. SUBAGENT_MODELS_API_KEY overrides it.",
       "required": false,
       "sensitive": true
     }
-  }
+  },
+  "types": "./types/index.d.ts"
 }
